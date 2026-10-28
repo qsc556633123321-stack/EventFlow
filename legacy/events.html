@@ -1,0 +1,13 @@
+<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>EventFlow｜活動列表</title><link rel="stylesheet" href="css/style.css"></head><body><header class="site-header"><div class="container header-inner"><div class="brand">EventFlow <span>活動列表</span></div><a href="admin.html">管理後台</a></div></header><main class="container"><section class="hero"><h1>探索活動</h1><p>選擇想參加的活動，進入專屬報名表。</p></section><div id="events" class="layout"></div></main><script src="js/config.js"></script><script src="js/storage.js"></script><script>
+const root=document.getElementById("events");
+for(const event of Storage.getEvents().filter(e=>!e.archived)){
+ const card=document.createElement("section");card.className="card";
+ const title=document.createElement("h2");title.textContent=event.title;
+ const info=document.createElement("p");info.textContent=`${event.date} · ${event.location} · ${event.status==="open"?"開放報名":"暫停報名"}`;
+ const count=Storage.getRegistrations().filter(r=>r.eventId===event.id&&r.status==="confirmed").reduce((n,r)=>n+Number(r.participants||0),0);
+ const remain=document.createElement("p");remain.textContent=`剩餘 ${Math.max(0,event.capacity-count)} / ${event.capacity} 名`;
+ const link=document.createElement("a");link.className="btn btn-primary";link.href="index.html?event="+encodeURIComponent(event.id);link.textContent="查看活動";
+ card.append(title,info,remain,link);root.appendChild(card);
+}
+if(!root.children.length)root.textContent="目前沒有公開活動。";
+</script></body></html>

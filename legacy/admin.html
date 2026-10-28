@@ -1,0 +1,289 @@
+
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EventFlow V1.1｜管理後台</title>
+<link rel="stylesheet" href="css/style.css">
+<style>
+.admin-top {
+  display:flex;justify-content:space-between;
+  align-items:center;gap:15px;flex-wrap:wrap;
+  margin:30px 0 22px;
+}
+.admin-tabs {
+  display:flex;gap:10px;flex-wrap:wrap;margin-bottom:22px;
+}
+.admin-tab {
+  padding:11px 20px;border:1px solid var(--border);
+  background:white;border-radius:9px;cursor:pointer;
+}
+.admin-tab.active {background:var(--primary);color:white}
+.admin-panel {display:none}
+.admin-panel.active {display:block}
+.admin-stats {
+  display:grid;grid-template-columns:repeat(3,1fr);
+  gap:16px;margin-bottom:22px;
+}
+.admin-stat {
+  background:white;border:1px solid var(--border);
+  padding:23px;border-radius:14px;
+}
+.admin-stat span {display:block;color:var(--muted);font-size:13px}
+.admin-stat strong {
+  display:block;font-size:30px;color:var(--primary)
+}
+.admin-table-wrap {overflow-x:auto}
+.admin-table {width:100%;border-collapse:collapse;font-size:14px}
+.admin-table th,.admin-table td {
+  padding:12px 10px;border-bottom:1px solid var(--border);
+  text-align:left;vertical-align:top;overflow-wrap:anywhere;
+}
+.admin-table th {background:#f0f5f1}
+.admin-toolbar,.admin-actions {
+  display:flex;gap:10px;flex-wrap:wrap;align-items:center;
+  margin:16px 0;
+}
+.admin-toolbar input {max-width:340px}
+.admin-toolbar select {width:auto}
+.admin-notice {
+  background:#fff8e9;border:1px solid #efdfb6;
+  border-radius:10px;padding:14px;font-size:13px;
+  margin-bottom:20px;
+}
+.admin-feedback {
+  padding:13px;border-radius:9px;background:#e8f2ed;
+  margin-top:14px;
+}
+.admin-feedback.error {background:#fff0ed;color:#a43434}
+.admin-feedback[hidden] {display:none}
+.field-editor {
+  border:1px solid var(--border);
+  border-radius:12px;padding:18px;margin:14px 0;
+  background:#fcfdfb;
+}
+.field-editor h3 {margin:0 0 12px}
+.field-editor .form-grid {gap:0 15px}
+.field-actions {display:flex;gap:8px;flex-wrap:wrap}
+.field-actions button {padding:7px 12px;font-size:12px}
+.checkbox-row {
+  display:flex;gap:8px;align-items:center;margin:10px 0;
+}
+.checkbox-row input {width:auto}
+.status {
+  display:inline-block;padding:3px 9px;
+  border-radius:20px;background:#e8f2ed;color:#326b53;
+}
+.status.cancelled {background:#f8ebeb;color:#aa5555}
+.preview-item {
+  border-bottom:1px solid var(--border);
+  padding:12px 0;
+}
+.preview-item label {display:block;font-weight:bold;margin-bottom:6px}
+@media(max-width:760px) {
+  .admin-stats {grid-template-columns:1fr}
+  .admin-toolbar input {max-width:none}
+}
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="container header-inner">
+    <div class="brand">EventFlow <span>V1.2 管理後台</span></div>
+    <a href="index.html" class="btn btn-outline"
+       style="text-decoration:none">返回報名頁面</a>
+  </div>
+</header>
+
+<main class="container">
+
+<div class="admin-top">
+  <div>
+    <h1>活動管理中心</h1>
+    <p class="hint">活動設定、表單設計、報名資料管理。</p>
+  </div>
+</div>
+
+<div class="admin-notice">
+  本機展示版本，沒有真正的管理員登入與資料權限保護。
+  請使用虛構測試資料，不要公開蒐集真實個資。
+</div>
+
+<div class="admin-stats">
+  <div class="admin-stat">
+    <span>有效報名筆數</span>
+    <strong id="totalRegistrations">0</strong>
+  </div>
+  <div class="admin-stat">
+    <span>已報名人數</span>
+    <strong id="totalPeople">0</strong>
+  </div>
+  <div class="admin-stat">
+    <span>剩餘名額</span>
+    <strong id="remainingCapacity">0</strong>
+  </div>
+</div>
+
+<div class="admin-toolbar"><label for="demoRole">示範角色</label><select id="demoRole"><option value="owner">系統管理員</option><option value="organizer">主辦單位管理員</option><option value="staff">活動工作人員</option></select><label for="activeEventSelect">目前管理活動</label><select id="activeEventSelect"></select><a href="events.html">公開活動列表</a></div>
+<div class="admin-tabs">
+  <button class="admin-tab" data-panel="eventsPanel">活動列表</button>
+  <button class="admin-tab active" data-panel="settingsPanel">
+    活動設定
+  </button>
+  <button class="admin-tab" data-panel="fieldsPanel">
+    表單設計器
+  </button>
+  <button class="admin-tab" data-panel="organizationPanel">主辦單位</button>
+  <button class="admin-tab" data-panel="backupPanel">備份與紀錄</button>
+  <button class="admin-tab" data-panel="registrationsPanel">
+    報名管理
+  </button>
+</div>
+
+<section id="eventsPanel" class="admin-panel">
+  <div class="card"><h2>活動列表</h2><div id="eventsList"></div></div>
+  <div class="card"><h2>建立新活動</h2>
+    <div class="field"><label for="newEventTitle">活動名稱</label><input id="newEventTitle" maxlength="100" placeholder="例如：秋季日本旅遊團"></div>
+    <div class="field"><label for="newEventTemplate">表單模板</label><select id="newEventTemplate"></select></div>
+    <button type="button" class="btn btn-primary" id="createEventButton">建立活動</button>
+    <div id="eventsFeedback" class="admin-feedback" hidden></div>
+  </div>
+</section>
+<section id="settingsPanel" class="admin-panel active">
+  <div class="card">
+    <h2>活動基本設定</h2>
+    <form id="eventSettingsForm">
+      <div class="field">
+        <label>活動名稱</label>
+        <input id="settingTitle" maxlength="100" required>
+      </div>
+      <div class="field">
+        <label>活動介紹</label>
+        <textarea id="settingDescription" maxlength="1000" required></textarea>
+      </div>
+      <div class="form-grid">
+        <div class="field">
+          <label>活動日期</label>
+          <input id="settingDate" type="date" required>
+        </div>
+        <div class="field">
+          <label>活動地點</label>
+          <input id="settingLocation" maxlength="200" required>
+        </div>
+        <div class="field">
+          <label>活動費用</label>
+          <input id="settingPrice" type="number" min="0" max="10000000" step="1" required>
+        </div>
+        <div class="field">
+          <label>活動總名額</label>
+          <input id="settingCapacity" type="number" min="1" max="1000000" step="1" required>
+        </div>
+        <div class="field">
+          <label>單筆報名人數上限</label>
+          <input id="settingMaxPeople" type="number" min="1" max="100" step="1" required>
+        </div>
+        <div class="field">
+          <label>報名狀態</label>
+          <select id="settingStatus">
+            <option value="open">開放報名</option>
+            <option value="closed">停止報名</option>
+          </select>
+        </div>
+      </div>
+      <div class="field"><label><input type="checkbox" id="settingReviewRequired" style="width:auto"> 新報名需要人工審核（待審核也預留名額）</label></div>
+      <div class="field"><label for="settingOrganization">所屬主辦單位</label><select id="settingOrganization"></select></div>
+      <div class="admin-actions">
+        <button class="btn btn-primary" type="submit">儲存活動設定</button>
+        <button class="btn btn-outline" type="button"
+                id="resetSettingsButton">恢復預設設定</button>
+      </div>
+    </form>
+    <div id="settingsFeedback" class="admin-feedback"
+         role="status" hidden></div>
+  </div>
+</section>
+
+<section id="fieldsPanel" class="admin-panel">
+  <div class="card">
+    <h2>自訂報名欄位</h2>
+    <p class="hint">
+      新增欄位、修改標題、設定必填與顯示狀態。
+      儲存後前台重新整理即可套用。
+    </p>
+
+    <div id="fieldEditorList"></div>
+
+    <div class="admin-actions">
+      <button type="button" class="btn btn-outline"
+              id="addFieldButton">＋ 新增欄位</button>
+      <button type="button" class="btn btn-primary"
+              id="saveFieldsButton">儲存表單設計</button>
+    </div>
+
+    <div id="fieldsFeedback" class="admin-feedback"
+         role="status" hidden></div>
+  </div>
+
+  <div class="card">
+    <h2>表單即時預覽</h2>
+    <p class="hint">預覽自訂欄位的排列與輸入方式。</p>
+    <div id="fieldsPreview"></div>
+  </div>
+</section>
+
+<section id="organizationPanel" class="admin-panel"><div class="card"><h2>主辦單位管理</h2><div id="organizationsList"></div><div class="form-grid"><div class="field"><label>名稱</label><input id="orgName" maxlength="100"></div><div class="field"><label>Email</label><input id="orgEmail" type="email" maxlength="254"></div><div class="field"><label>電話</label><input id="orgPhone" maxlength="30"></div></div><button id="addOrgButton" type="button" class="btn btn-primary">新增主辦單位</button><div id="orgFeedback" class="admin-feedback" hidden></div></div></section>
+<section id="backupPanel" class="admin-panel"><div class="card"><h2>資料備份與還原</h2><p>JSON 備份包含報名者資料，請妥善保管。還原會覆蓋目前全部活動、報名及主辦單位資料。</p><button type="button" id="backupButton" class="btn btn-primary">下載 JSON 備份</button><div class="field"><label>匯入 JSON 備份</label><input type="file" id="restoreFile" accept=".json,application/json"></div><button type="button" id="restoreButton" class="btn btn-outline">驗證並還原</button><div id="backupFeedback" class="admin-feedback" hidden></div></div><div class="card"><h2>操作紀錄（本機展示）</h2><div id="auditList"></div></div></section>
+<section id="registrationsPanel" class="admin-panel">
+  <div class="card">
+    <h2>報名名單管理</h2>
+
+    <div class="admin-toolbar">
+      <input id="searchInput"
+             placeholder="搜尋姓名、手機、Email、報名編號">
+      <select id="statusFilter">
+        <option value="all">全部狀態</option>
+        <option value="confirmed">已確認</option><option value="pending">待審核</option><option value="rejected">已拒絕</option>
+        <option value="cancelled">已取消</option>
+      </select>
+      <button class="btn btn-primary" type="button"
+              id="exportButton">匯出 CSV</button>
+    </div>
+
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>報名時間</th>
+            <th>姓名</th>
+            <th>手機</th>
+            <th>Email</th>
+            <th>人數</th>
+            <th>特殊需求</th>
+            <th>自訂欄位</th>
+            <th>狀態</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="registrationTableBody"></tbody>
+      </table>
+    </div>
+
+    <p id="listCount" class="hint"></p>
+    <div id="listFeedback" class="admin-feedback"
+         role="status" hidden></div>
+  </div>
+</section>
+
+</main>
+
+<footer>EventFlow V1.3 · 主辦單位與報名審核</footer>
+
+<script src="js/config.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/templates.js"></script>
+<script src="js/admin.js"></script>
+<script src="js/v13.js"></script>
+</body>
+</html>

@@ -1,0 +1,172 @@
+
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EventFlow｜活動報名</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="container header-inner">
+    <div class="brand">EventFlow <span>活動報名</span></div>
+    <div class="header-label"><a href="events.html">所有活動</a> · <a href="admin.html">管理後台</a></div>
+  </div>
+</header>
+
+<main class="container">
+
+  <section class="hero">
+    <div class="eyebrow">EVENT REGISTRATION</div>
+    <h1 id="eventTitle">活動報名</h1>
+    <p id="eventDescription">正在載入活動資訊...</p>
+
+    <div class="event-meta">
+      <div>
+        <span>活動日期</span>
+        <strong id="eventDate">—</strong>
+      </div>
+      <div>
+        <span>活動地點</span>
+        <strong id="eventLocation">—</strong>
+      </div>
+      <div>
+        <span>活動費用</span>
+        <strong id="eventPrice">—</strong>
+      </div>
+    </div>
+  </section>
+
+  <div class="layout">
+
+    <section class="card">
+      <div class="section-heading">
+        <div>
+          <h2>填寫報名資料</h2>
+          <p>請填寫正確的聯絡資訊，方便後續通知。</p>
+        </div>
+      </div>
+
+      <form id="registrationForm" novalidate>
+
+        <div class="form-grid">
+
+          <div class="field">
+            <label for="name">姓名 <em>*</em></label>
+            <input id="name" name="name"
+                   type="text" maxlength="60"
+                   autocomplete="name"
+                   placeholder="請輸入真實姓名" required>
+            <small class="error" id="nameError"></small>
+          </div>
+
+          <div class="field">
+            <label for="phone">手機號碼 <em>*</em></label>
+            <input id="phone" name="phone"
+                   type="tel" inputmode="tel"
+                   autocomplete="tel"
+                   placeholder="0912-345-678" required>
+            <small class="error" id="phoneError"></small>
+          </div>
+
+          <div class="field">
+            <label for="email">電子郵件 <em>*</em></label>
+            <input id="email" name="email"
+                   type="email" maxlength="254"
+                   autocomplete="email"
+                   placeholder="example@email.com" required>
+            <small class="error" id="emailError"></small>
+          </div>
+
+          <div class="field">
+            <label for="participants">報名人數 <em>*</em></label>
+            <select id="participants" name="participants" required>
+              <option value="1">1 人</option>
+              <option value="2">2 人</option>
+              <option value="3">3 人</option>
+              <option value="4">4 人</option>
+            </select>
+            <small class="error" id="participantsError"></small>
+          </div>
+
+        </div>
+
+        <div class="field">
+          <label for="notes">特殊需求或備註</label>
+          <textarea id="notes" name="notes"
+                    maxlength="500"
+                    placeholder="例如：飲食需求、無障礙協助等"></textarea>
+          <div class="field-hint">選填，最多 500 字。</div>
+        </div>
+
+        <div class="agreement">
+          <input type="checkbox" id="agree" required>
+          <label for="agree">
+            我確認填寫資料正確，並同意主辦方依活動報名目的使用所提供的資料。
+          </label>
+        </div>
+        <small class="error" id="agreeError"></small>
+
+        <div class="form-actions">
+          <button type="reset" class="btn btn-outline">清除內容</button>
+          <button type="submit" class="btn btn-primary" id="submitButton">
+            確認送出報名
+          </button>
+        </div>
+
+      </form>
+
+      <div id="result" class="result hidden" role="status" aria-live="polite"></div>
+    </section>
+
+    <aside>
+      <section class="card sidebar-card">
+        <h3>活動報名資訊</h3>
+
+        <div class="info-row">
+          <span>活動名額</span>
+          <strong id="capacity">—</strong>
+        </div>
+
+        <div class="info-row">
+          <span>已報名人數</span>
+          <strong id="registered">—</strong>
+        </div>
+
+        <div class="info-row">
+          <span>剩餘名額</span>
+          <strong id="remaining">—</strong>
+        </div>
+
+        <div class="progress">
+          <div id="progressBar"></div>
+        </div>
+
+        <p class="hint" id="availabilityText"></p>
+      </section>
+
+      <section class="card sidebar-card">
+        <h3>報名流程</h3>
+        <div class="step"><b>01</b> 填寫報名資料</div>
+        <div class="step"><b>02</b> 系統檢查格式</div>
+        <div class="step"><b>03</b> 確認活動名額</div>
+        <div class="step"><b>04</b> 產生報名結果</div>
+      </section>
+    </aside>
+
+  </div>
+
+</main>
+
+<footer>
+  EventFlow V1.2 · 活動報名系統前端原型
+</footer>
+
+<script src="js/config.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/validation.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

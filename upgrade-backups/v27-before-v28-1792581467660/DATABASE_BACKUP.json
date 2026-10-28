@@ -1,0 +1,17 @@
+{
+  "createdAt": "2026-10-21T11:41:57.683Z",
+  "sourceVersion": 27,
+  "integrity": "ok",
+  "foreignKeyErrors": 0,
+  "counts": {
+    "organizations": 1,
+    "users": 1,
+    "events": 6,
+    "registrations": 0,
+    "tickets": 0,
+    "checkins": 0,
+    "notifications": 0,
+    "audit": 6
+  },
+  "sha256": "56503c6e95a1f9e2a859dc3184fb1d06139a21a1b7a5cfabf3d887049ea57862"
+}

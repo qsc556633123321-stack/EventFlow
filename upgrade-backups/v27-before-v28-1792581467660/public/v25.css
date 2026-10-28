@@ -1,0 +1,5 @@
+.sidebar{min-width:0}.sidebar nav{min-width:0;max-width:100%}
+dialog{max-width:calc(100vw - 32px);border:1px solid var(--line);border-radius:18px;padding:24px;color:var(--ink)}dialog::backdrop{background:#13243d88}dialog img{max-width:100%;height:auto}
+#checkinResult:not(:empty){padding:12px;border-radius:10px;background:#edf1ff;overflow-wrap:anywhere}
+#checkinPanel p,#who{overflow-wrap:anywhere}
+@media(max-width:900px){.admin-shell{grid-template-columns:minmax(0,1fr)}.sidebar{max-width:100vw}.sidebar nav{overscroll-behavior-x:contain}}
