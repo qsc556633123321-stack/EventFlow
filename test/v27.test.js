@@ -45,7 +45,7 @@ test('V2.7 tenant boundaries, role lifecycle, scoped audit, legacy migration and
  cookie=owner;await request('/api/admin/users/'+userA,{role:'admin',organizationId:orgB,disabled:false},200,'PUT');await login('admin-a@v27.test');assert.ok((await request('/api/admin/events')).data.every(e=>e.organizationId===orgB));await request('/api/admin/events/'+eventA+'/registrations',undefined,403);
  cookie=owner;await request('/api/admin/context',{organizationId:null});const before=(await request('/api/admin/backup')).data;
  await stop();await start();assert.equal(readdirSync(path.join(dir,'migration-backups')).length,1);const after=(await request('/api/admin/backup')).data;assert.deepEqual(after.events,before.events);assert.deepEqual(after.registrations,before.registrations);
- await stop();const db=new DatabaseSync(path.join(dir,'eventflow.sqlite'),{readOnly:true});assert.equal(db.prepare('PRAGMA user_version').get().user_version,28);assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check,'ok');assert.equal(db.prepare('PRAGMA foreign_key_check').all().length,0);assert.equal(db.prepare('SELECT name FROM organizations WHERE id=?').get('legacy-org').name,'既有組織');db.close();
+ await stop();const db=new DatabaseSync(path.join(dir,'eventflow.sqlite'),{readOnly:true});assert.equal(db.prepare('PRAGMA user_version').get().user_version,29);assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check,'ok');assert.equal(db.prepare('PRAGMA foreign_key_check').all().length,0);assert.equal(db.prepare('SELECT name FROM organizations WHERE id=?').get('legacy-org').name,'既有組織');db.close();
 });
 
 test('V2.7 migration refuses invalid legacy references and rolls back new columns',async t=>{
@@ -54,6 +54,3 @@ test('V2.7 migration refuses invalid legacy references and rolls back new column
  const child=spawn(process.execPath,['server.js'],{cwd:root,env:{...process.env,EVENTFLOW_DATA_DIR:dir,PORT:'34899',HOST:'127.0.0.1'},stdio:'pipe'});let err='';child.stderr.on('data',b=>err+=b);const code=await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{child.kill();reject(Error('Expected migration rejection'))},10000);child.once('exit',code=>{clearTimeout(timer);resolve(code)})});assert.notEqual(code,0);assert.match(err,/Migration foreign key check failed/);
  const migrated=new DatabaseSync(path.join(dir,'eventflow.sqlite'),{readOnly:true});assert.ok(!migrated.prepare('PRAGMA table_info(users)').all().some(x=>x.name==='disabled'));assert.equal(migrated.prepare('SELECT passhash FROM users WHERE id=?').get('orphan').passhash,'existing-hash');assert.ok(!migrated.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get());migrated.close();assert.equal(readdirSync(path.join(dir,'migration-backups')).length,1);
 });
-
-
-

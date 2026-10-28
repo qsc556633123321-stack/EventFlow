@@ -6,7 +6,7 @@ window.showTicket=async function(id,code,target){
   const options={method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,code})};
   const response=await fetch('/api/registrations/lookup',options);const state=await response.json();if(!response.ok)throw Error(state.error);
   note.textContent='目前狀態：'+(labels[state.status]||state.status);
-  if(!state.ticket){note.append('；確認報名後即可在此取得 QR Code 憑證。');return;}
+  if(!state.ticket){note.append('；目前無有效 QR 憑證；待審核與候補尚未取得正式名額，取消或拒絕後不能入場。');return;}
   const res=await fetch('/api/registrations/ticket',options);const ticket=await res.json();if(!res.ok)throw Error(ticket.error);
   const title=document.createElement('h3');title.textContent=ticket.title+'｜報名憑證';
   const image=document.createElement('img');image.src=ticket.qr;image.alt='EventFlow 報名 QR Code';image.width=280;image.style.maxWidth='100%';
@@ -17,4 +17,4 @@ window.showTicket=async function(id,code,target){
   target.append(title,image,detail,save,payload,warning);
  }catch(e){note.textContent=e.message;}
 };
-document.getElementById('lookupForm').onsubmit=async e=>{e.preventDefault();const f=e.target;document.getElementById('lookupResult').textContent='';await window.showTicket(f.elements.id.value.trim(),f.elements.code.value.trim(),document.getElementById('lookupTicket'));};
+if(document.getElementById('lookupForm'))document.getElementById('lookupForm').onsubmit=async e=>{e.preventDefault();const f=e.target;document.getElementById('lookupResult').textContent='';await window.showTicket(f.elements.id.value.trim(),f.elements.code.value.trim(),document.getElementById('lookupTicket'));};
