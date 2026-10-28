@@ -61,7 +61,7 @@ test('V2.5 lifecycle, real QR decoding, atomic redemption, authorization, restar
  await request('/api/admin/events/'+e+'/checkins',check,true,403);await request('/api/admin/events/'+e+'/checkins',undefined,true,403);await request('/api/admin/registrations/'+reg.id+'/ticket',undefined,true,403);
  await request('/api/admin/reports?eventId='+e,undefined,true,400);assert.equal((await request('/api/admin/reports')).d.totals.events,0);
  cookie=ownerCookie;
- const backupData=(await request('/api/admin/backup')).d;assert.equal(backupData.appVersion,'2.8.0');assert.equal(backupData.checkins.length,1);assert.equal(backupData.version,14);
+ const backupData=(await request('/api/admin/backup')).d;assert.equal(backupData.appVersion,'2.9.0');assert.equal(backupData.checkins.length,1);assert.equal(backupData.version,14);
  await request('/api/admin/notifications');await request('/api/admin/stats');
  // Same-organization staff can operate check-in.
  const me=(await request('/api/me')).d;await request('/api/users',{email:'localstaff@example.test',password:owner.password,role:'staff',organizationId:me.organization_id});
@@ -69,10 +69,8 @@ test('V2.5 lifecycle, real QR decoding, atomic redemption, authorization, restar
  await stop();base=await start(path.join(dir,'fresh'));assert.equal((await request('/api/admin/events/'+e+'/checkins')).d.registrations,1);await request('/api/admin/events/'+e+'/checkins',check,true,409);await stop();
  // Copy the real V2.4 database consistently, then migrate only the isolated copy.
  const source=new DatabaseSync(path.join(root,'data','eventflow.sqlite'),{readOnly:true});const copied=path.join(dir,'eventflow.sqlite');await backup(source,copied);const before={};for(const table of ['events','registrations','users','notifications'])before[table]=Number(source.prepare('SELECT COUNT(*) n FROM '+table).get().n);source.close();
- base=await start(dir);assert.equal((await fetch(base+'/api/health').then(r=>r.json())).version,'2.8.0');await stop();const migrated=new DatabaseSync(copied,{readOnly:true});for(const [table,count] of Object.entries(before))assert.equal(Number(migrated.prepare('SELECT COUNT(*) n FROM '+table).get().n),count);assert.ok(migrated.prepare("SELECT name FROM sqlite_master WHERE name='checkins'").get());migrated.close();
+ base=await start(dir);assert.equal((await fetch(base+'/api/health').then(r=>r.json())).version,'2.9.0');await stop();const migrated=new DatabaseSync(copied,{readOnly:true});for(const [table,count] of Object.entries(before))assert.equal(Number(migrated.prepare('SELECT COUNT(*) n FROM '+table).get().n),count);assert.ok(migrated.prepare("SELECT name FROM sqlite_master WHERE name='checkins'").get());migrated.close();
  // Parse every inline and external browser script and ensure no duplicated IDs or orphan insights.
  const vm=await import('node:vm');for(const name of ['admin','index','blueprint']){const html=readFileSync(path.join(root,'public',name+'.html'),'utf8');const ids=[...html.matchAll(/\bid="([^"]+)"/g)].map(m=>m[1]);assert.equal(ids.length,new Set(ids).size);for(const m of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g))new vm.Script(m[1]);assert.ok(!/V2\.[1234]\b/.test(html));if(name==='admin')assert.ok(!html.includes('v22Insights'));}
  for(const file of ['discovery.js','ticket.js','checkin.js','governance.js','reports.js'])new vm.Script(readFileSync(path.join(root,'public',file),'utf8'));
 });
-
-

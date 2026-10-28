@@ -3,11 +3,12 @@ import fs from 'node:fs';import path from 'node:path';import {randomUUID} from '
 export async function openDatabase(dataDir){
 fs.mkdirSync(dataDir,{recursive:true});
 const db=new DatabaseSync(path.join(dataDir,'eventflow.sqlite'),{timeout:5000});
-if(db.prepare('PRAGMA user_version').get().user_version>28){db.close();throw Error('Database version is newer than this application');}
+if(db.prepare('PRAGMA user_version').get().user_version>29){db.close();throw Error('Database version is newer than this application');}
+const needs29=!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get()||!db.prepare('SELECT version FROM schema_migrations WHERE version=29').get();
 const needs28=!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get()||!db.prepare('SELECT version FROM schema_migrations WHERE version=28').get();
-if(needs28&&db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get()){
+if(needs29&&db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get()){
  const dest=path.join(dataDir,'migration-backups');fs.mkdirSync(dest,{recursive:true});
- const file=path.join(dest,'pre-v28-'+Date.now()+'-'+randomUUID()+'.sqlite');
+ const file=path.join(dest,'pre-v29-'+Date.now()+'-'+randomUUID()+'.sqlite');
  await backup(db,file);
  // Normalize the backup only to DELETE journaling so it is one portable SQLite file.
  const verified=new DatabaseSync(file);
@@ -65,5 +66,16 @@ if(needs28){
  db.exec('COMMIT');
  }catch(e){db.exec('ROLLBACK');throw e;}
 }
+if(needs29){db.exec('BEGIN IMMEDIATE');try{
+ const fields=[['events','auto_waitlist','INTEGER NOT NULL DEFAULT 1'],['notifications','message_id',"TEXT NOT NULL DEFAULT ''"],['notifications','delivery_state',"TEXT NOT NULL DEFAULT 'unknown'"],['notifications','lease_until','INTEGER NOT NULL DEFAULT 0']];
+ for(const [table,column,type] of fields)if(!db.prepare('PRAGMA table_info('+table+')').all().some(x=>x.name===column))db.exec('ALTER TABLE '+table+' ADD COLUMN '+column+' '+type);
+ db.exec(`CREATE TABLE account_tokens(id TEXT PRIMARY KEY,kind TEXT NOT NULL CHECK(kind IN ('invite','reset')),token_hash TEXT NOT NULL UNIQUE,email TEXT NOT NULL,user_id TEXT REFERENCES users(id),organization_id TEXT REFERENCES organizations(id),role TEXT,created_by TEXT REFERENCES users(id),created_at TEXT NOT NULL,expires_at INTEGER NOT NULL,used_at TEXT,revoked_at TEXT);
+ CREATE INDEX account_token_email ON account_tokens(email,kind,expires_at);
+ CREATE TABLE account_messages(id TEXT PRIMARY KEY,token_id TEXT NOT NULL UNIQUE REFERENCES account_tokens(id),payload TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'queued',attempts INTEGER NOT NULL DEFAULT 0,next_attempt_at INTEGER NOT NULL DEFAULT 0,last_error TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,sent_at TEXT,message_id TEXT NOT NULL DEFAULT '',delivery_state TEXT NOT NULL DEFAULT 'unknown',lease_until INTEGER NOT NULL DEFAULT 0);
+ CREATE TABLE maintenance_state(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+ CREATE INDEX audit_time_org ON audit(organization_id,at,id);
+ INSERT INTO schema_migrations(version,applied_at) VALUES(29,datetime('now'));PRAGMA user_version=29;`);
+ if(db.prepare('PRAGMA foreign_key_check').all().length||db.prepare('PRAGMA integrity_check').get().integrity_check!=='ok')throw Error('Migration integrity check failed');db.exec('COMMIT');
+ }catch(e){db.exec('ROLLBACK');throw e;}}
 return db;
 }

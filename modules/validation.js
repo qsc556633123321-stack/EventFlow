@@ -16,7 +16,7 @@ export function fieldsValid(fields){
  });
 }
 export function validateEvent(v){
- return record(v)&&text(v.title,100,true)&&Number.isSafeInteger(v.capacity)&&v.capacity>0&&v.capacity<=1000000&&Number.isSafeInteger(v.maxPerRegistration)&&v.maxPerRegistration>0&&v.maxPerRegistration<=100&&Number.isSafeInteger(v.price)&&v.price>=0&&v.price<=100000000&&['open','closed','draft','cancelled'].includes(v.status)&&fieldsValid(v.customFields)&&['reviewRequired','allowWaitlist','archived'].every(k=>v[k]===undefined||typeof v[k]==='boolean')&&(v.description===undefined||text(v.description,20000))&&(v.date===undefined||v.date===''||date(v.date))&&(v.location===undefined||text(v.location,300))&&(v.organizationId===undefined||identifier(v.organizationId))&&(v.category===undefined||['旅遊','講座','營隊','體驗'].includes(v.category));
+ return record(v)&&text(v.title,100,true)&&Number.isSafeInteger(v.capacity)&&v.capacity>0&&v.capacity<=1000000&&Number.isSafeInteger(v.maxPerRegistration)&&v.maxPerRegistration>0&&v.maxPerRegistration<=100&&Number.isSafeInteger(v.price)&&v.price>=0&&v.price<=100000000&&['open','closed','draft','cancelled'].includes(v.status)&&fieldsValid(v.customFields)&&['reviewRequired','allowWaitlist','autoWaitlist','archived'].every(k=>v[k]===undefined||typeof v[k]==='boolean')&&(v.description===undefined||text(v.description,20000))&&(v.date===undefined||v.date===''||date(v.date))&&(v.location===undefined||text(v.location,300))&&(v.organizationId===undefined||identifier(v.organizationId))&&(v.category===undefined||['旅遊','講座','營隊','體驗'].includes(v.category));
 }
 export function routeValidation(req,res,next){
  const v=req.body,p=req.path;

@@ -9,3 +9,6 @@ node_modules/
 *.sqlite-*
 data/
 backups/
+upgrade-backups/
+test/artifacts/
+*.key
