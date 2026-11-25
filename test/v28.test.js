@@ -1,5 +1,5 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import path from 'node:path';import vm from 'node:vm';import {DatabaseSync,backup} from 'node:sqlite';import nodemailer from 'nodemailer';
-import {server,root} from './helpers.js';import {openDatabase} from '../modules/database.js';import {createMailer} from '../modules/mail.js';
+import {server,root,removeV30} from './helpers.js';import {openDatabase} from '../modules/database.js';import {createMailer} from '../modules/mail.js';
 const password='V28-test-passphrase-123';
 test('V2.8 assigned event RBAC, organization member management, CSV, QR and audit outcomes',async t=>{
  const s=await server(t);const {call,login}=s;
@@ -54,9 +54,9 @@ test('V2.8 assigned event RBAC, organization member management, CSV, QR and audi
  assert.equal((await request('/api/admin/events/'+a1+'/registrations',{cookie:admin})).length,1);
  const archived=(await request('/api/admin/events',{cookie:admin})).find(e=>e.id===a1);await request('/api/admin/events/'+a1,{cookie:admin,method:'PUT',body:{...archived,archived:false}});
  const rows=await request('/api/admin/audit',{cookie:admin});assert.ok(rows.every(r=>r.organization_id===orgA));
- for(const action of ['user.create','user.update','registration.review','registration.cancel','registration.checkin','registration.checkin_duplicate','event.delete'])assert.ok(rows.some(r=>r.action===action),action);
+ for(const action of ['user.create','membership.update','registration.review','registration.cancel','registration.checkin','registration.checkin_duplicate','event.delete'])assert.ok(rows.some(r=>r.action===action),action);
  assert.ok(rows.some(r=>r.result==='denied'));assert.ok(rows.some(r=>r.action==='registration.checkin_duplicate'&&r.result==='conflict'&&r.status_code===409));
- assert.ok(rows.filter(r=>r.result==='success'&&r.action.startsWith('registration.')).every(r=>r.target_id&&r.user_id&&r.at));
+ assert.ok(rows.filter(r=>r.result==='success'&&r.action.startsWith('registration.')).every(r=>r.target_id&&r.at&&(r.action==='registration.create'||r.user_id)));
  const serialized=JSON.stringify(await request('/api/admin/audit',{cookie:owner}));for(const secret of [password,ticket.payload,reg1.lookupCode,s.csrf.get(owner),owner.split('=')[1]])assert.ok(!serialized.includes(secret));
 });
 
@@ -95,16 +95,16 @@ test('V2.8 mail generation, preview, retry and secret-free transport errors',asy
  const failing=createMailer(db,{enabled:true,from:'sender@example.test',transport:{sendMail:async()=>{throw Object.assign(Error('smtp-secret-password'),{code:'EAUTH'})}}});failing.queueMail('mail-reg','cancelled');for(let n=0;n<5;n++){db.prepare("UPDATE notifications SET next_attempt_at=0 WHERE kind='cancelled'").run();await failing.processMail()}const row=db.prepare("SELECT * FROM notifications WHERE kind='cancelled'").get();assert.equal(row.status,'failed');assert.equal(row.attempts,5);assert.equal(row.last_error,'EAUTH');assert.ok(!JSON.stringify(row).includes('smtp-secret-password'));
 });
 
-test('Current production copy upgrades to V2.9 without altering event/registration/ticket history',async t=>{
+test('Current production copy upgrades to V3.0 without altering event/registration/ticket history',async t=>{
  const s=await server(t);await s.stop();
  // Only the read-only production connection and its consistent backup are touched.
  if(!fs.existsSync(path.join(root,'data/eventflow.sqlite'))){t.skip('No local production database; synthetic historical fixture remains active');return}const source=new DatabaseSync(path.join(root,'data/eventflow.sqlite'),{readOnly:true});const destination=path.join(s.dir,'eventflow.sqlite');await backup(source,destination);source.close();
  const snapshot=new DatabaseSync(destination,{readOnly:true});const sourceVersion=snapshot.prepare('PRAGMA user_version').get().user_version;
  const tables=['organizations','users','events','registrations','tickets','checkins','notifications','audit'];const before=Object.fromEntries(tables.map(table=>[table,snapshot.prepare('SELECT * FROM '+table+' ORDER BY 1').all()]));snapshot.close();
- const db=await openDatabase(s.dir);assert.equal(db.prepare('PRAGMA user_version').get().user_version,29);
+ const db=await openDatabase(s.dir);assert.equal(db.prepare('PRAGMA user_version').get().user_version,31);
  for(const table of tables){const columns=Object.keys(before[table][0]||{});if(!columns.length)continue;const rows=db.prepare('SELECT '+columns.join(',')+' FROM '+table+' ORDER BY 1').all();assert.deepEqual(rows,before[table],table);}
- assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check,'ok');assert.equal(db.prepare('PRAGMA foreign_key_check').all().length,0);assert.equal(db.prepare('SELECT count(*) n FROM schema_migrations WHERE version=29').get().n,1);db.close();
- const backups=fs.existsSync(path.join(s.dir,'migration-backups'))?fs.readdirSync(path.join(s.dir,'migration-backups')):[];assert.equal(backups.length,sourceVersion<29?1:0);if(backups.length){const saved=new DatabaseSync(path.join(s.dir,'migration-backups',backups[0]),{readOnly:true});assert.equal(saved.prepare('PRAGMA user_version').get().user_version,sourceVersion);saved.close();}
+ assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check,'ok');assert.equal(db.prepare('PRAGMA foreign_key_check').all().length,0);assert.equal(db.prepare('SELECT count(*) n FROM schema_migrations WHERE version=31').get().n,1);db.close();
+ const backups=fs.existsSync(path.join(s.dir,'migration-backups'))?fs.readdirSync(path.join(s.dir,'migration-backups')):[];assert.equal(backups.length,sourceVersion<31?1:0);if(backups.length){const saved=new DatabaseSync(path.join(s.dir,'migration-backups',backups[0]),{readOnly:true});assert.equal(saved.prepare('PRAGMA user_version').get().user_version,sourceVersion);saved.close();}
  const again=await openDatabase(s.dir);again.close();assert.equal(fs.existsSync(path.join(s.dir,'migration-backups'))?fs.readdirSync(path.join(s.dir,'migration-backups')).length:0,backups.length);
 });
 
@@ -114,8 +114,8 @@ test('V2.7 fixture migrates complete QR history, preserves hashes and revokes ol
  const reg=(await call('/api/events/'+e+'/register',{body:{name:'歷史參加者',phone:'0912345678',email:'fixture-guest@example.test',participants:1}})).data;
  const ticket=(await call('/api/registrations/ticket',{body:{id:reg.id,code:reg.lookupCode}})).data;
  assert.equal((await call('/api/admin/events/'+e+'/checkins',{cookie:owner,body:{payload:ticket.payload,method:'manual'}})).status,200);await s.stop();
- const legacy=new DatabaseSync(path.join(s.dir,'eventflow.sqlite'));legacy.exec("DROP TABLE account_messages;DROP TABLE account_tokens;DROP TABLE maintenance_state;DROP INDEX audit_time_org;ALTER TABLE events DROP COLUMN auto_waitlist;DELETE FROM schema_migrations WHERE version=29;");for(const col of ['message_id','delivery_state','lease_until'])legacy.exec('ALTER TABLE notifications DROP COLUMN '+col);legacy.exec('DROP TABLE user_event_access; DROP INDEX audit_action_result;');for(const name of ['result','target_type','target_id','request_id','status_code'])legacy.exec('ALTER TABLE audit DROP COLUMN '+name);legacy.exec("ALTER TABLE users DROP COLUMN staff_mode; DELETE FROM schema_migrations WHERE version=28; PRAGMA user_version=27;");
+ const legacy=new DatabaseSync(path.join(s.dir,'eventflow.sqlite'));removeV30(legacy);legacy.exec("DROP TABLE account_messages;DROP TABLE account_tokens;DROP TABLE maintenance_state;DROP INDEX audit_time_org;ALTER TABLE events DROP COLUMN auto_waitlist;DELETE FROM schema_migrations WHERE version=29;");for(const col of ['message_id','delivery_state','lease_until'])legacy.exec('ALTER TABLE notifications DROP COLUMN '+col);legacy.exec('DROP TABLE user_event_access; DROP INDEX audit_action_result;');for(const name of ['result','target_type','target_id','request_id','status_code'])legacy.exec('ALTER TABLE audit DROP COLUMN '+name);legacy.exec("ALTER TABLE users DROP COLUMN staff_mode; DELETE FROM schema_migrations WHERE version=28; PRAGMA user_version=27;");
  const before={};for(const table of ['users','events','registrations','tickets','checkins','notifications','audit'])before[table]=legacy.prepare('SELECT * FROM '+table+' ORDER BY 1').all();assert.ok(legacy.prepare('SELECT count(*) n FROM sessions').get().n>0);legacy.close();
- const upgraded=await openDatabase(s.dir);s.resources.push(upgraded);for(const [table,rows] of Object.entries(before)){if(!rows.length)continue;assert.deepEqual(upgraded.prepare('SELECT '+Object.keys(rows[0]).join(',')+' FROM '+table+' ORDER BY 1').all(),rows,table)}assert.equal(upgraded.prepare('SELECT count(*) n FROM sessions').get().n,0);assert.equal(upgraded.prepare('SELECT staff_mode FROM users WHERE id=?').get(me.id).staff_mode,'organization');assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version,29);upgraded.close();
+ const upgraded=await openDatabase(s.dir);s.resources.push(upgraded);for(const [table,rows] of Object.entries(before)){if(!rows.length)continue;assert.deepEqual(upgraded.prepare('SELECT '+Object.keys(rows[0]).join(',')+' FROM '+table+' ORDER BY 1').all(),rows,table)}assert.equal(upgraded.prepare('SELECT count(*) n FROM sessions').get().n,0);assert.equal(upgraded.prepare('SELECT staff_mode FROM users WHERE id=?').get(me.id).staff_mode,'organization');assert.equal(upgraded.prepare('PRAGMA user_version').get().user_version,31);upgraded.close();
  await s.start();assert.equal((await call('/api/me',{cookie:owner})).status,401);const renewed=await login('fixture@v28.test',password);assert.equal((await call('/api/admin/events/'+e+'/checkins',{cookie:renewed})).data.registrations,1);assert.equal((await call('/api/admin/events/'+e+'/checkins',{cookie:renewed,body:{payload:ticket.payload,method:'manual'}})).status,409);
 });

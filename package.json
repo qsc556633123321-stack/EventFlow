@@ -1,6 +1,6 @@
 {
-  "name": "eventflow-v29",
-  "version": "2.9.0",
+  "name": "eventflow-v30",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -16,6 +16,8 @@
     "express": "^4.21.2",
     "jsqr": "^1.4.0",
     "nodemailer": "10.1.7",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "socket.io": "4.8.4",
+    "socket.io-client": "4.8.4"
   }
 }
