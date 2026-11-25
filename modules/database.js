@@ -3,12 +3,13 @@ import fs from 'node:fs';import path from 'node:path';import {randomUUID} from '
 export async function openDatabase(dataDir){
 fs.mkdirSync(dataDir,{recursive:true});
 const db=new DatabaseSync(path.join(dataDir,'eventflow.sqlite'),{timeout:5000});
-if(db.prepare('PRAGMA user_version').get().user_version>29){db.close();throw Error('Database version is newer than this application');}
+if(db.prepare('PRAGMA user_version').get().user_version>30){db.close();throw Error('Database version is newer than this application');}
+const needs30=!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get()||!db.prepare('SELECT version FROM schema_migrations WHERE version=30').get();
 const needs29=!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get()||!db.prepare('SELECT version FROM schema_migrations WHERE version=29').get();
 const needs28=!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get()||!db.prepare('SELECT version FROM schema_migrations WHERE version=28').get();
-if(needs29&&db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get()){
+if(needs30&&db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get()){
  const dest=path.join(dataDir,'migration-backups');fs.mkdirSync(dest,{recursive:true});
- const file=path.join(dest,'pre-v29-'+Date.now()+'-'+randomUUID()+'.sqlite');
+ const file=path.join(dest,'pre-v30-'+Date.now()+'-'+randomUUID()+'.sqlite');
  await backup(db,file);
  // Normalize the backup only to DELETE journaling so it is one portable SQLite file.
  const verified=new DatabaseSync(file);
@@ -77,5 +78,53 @@ if(needs29){db.exec('BEGIN IMMEDIATE');try{
  INSERT INTO schema_migrations(version,applied_at) VALUES(29,datetime('now'));PRAGMA user_version=29;`);
  if(db.prepare('PRAGMA foreign_key_check').all().length||db.prepare('PRAGMA integrity_check').get().integrity_check!=='ok')throw Error('Migration integrity check failed');db.exec('COMMIT');
  }catch(e){db.exec('ROLLBACK');throw e;}}
+if(needs30){
+ db.exec('BEGIN IMMEDIATE');try{
+  // Membership becomes the authority for a non-owner's active organization.
+  // Legacy user columns remain untouched for source/history compatibility.
+  db.exec(`CREATE TABLE organization_memberships(
+   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+   organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+   role TEXT NOT NULL CHECK(role IN ('admin','staff')),
+   status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','suspended')),
+   staff_mode TEXT NOT NULL DEFAULT 'assigned' CHECK(staff_mode IN ('organization','assigned')),
+   created_at TEXT NOT NULL,updated_at TEXT NOT NULL,
+   PRIMARY KEY(user_id,organization_id));
+  INSERT INTO organization_memberships(user_id,organization_id,role,status,staff_mode,created_at,updated_at)
+   SELECT id,organization_id,CASE WHEN role='owner' THEN 'admin' ELSE role END,'active',staff_mode,strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM users;
+  UPDATE sessions SET organization_id=(SELECT u.organization_id FROM users u WHERE u.id=sessions.user_id)
+   WHERE organization_id IS NULL AND user_id IN (SELECT id FROM users WHERE role<>'owner');
+  DROP TRIGGER IF EXISTS access_same_org_insert;
+  DROP TRIGGER IF EXISTS access_same_org_update;
+  CREATE TRIGGER access_same_org_insert BEFORE INSERT ON user_event_access
+   WHEN NOT EXISTS(SELECT 1 FROM organization_memberships m JOIN events e ON e.organization_id=m.organization_id
+    WHERE m.user_id=NEW.user_id AND e.id=NEW.event_id AND m.role='staff' AND m.status='active')
+   BEGIN SELECT RAISE(ABORT,'Invalid event assignment'); END;
+  CREATE TRIGGER access_same_org_update BEFORE UPDATE ON user_event_access
+   WHEN NOT EXISTS(SELECT 1 FROM organization_memberships m JOIN events e ON e.organization_id=m.organization_id
+    WHERE m.user_id=NEW.user_id AND e.id=NEW.event_id AND m.role='staff' AND m.status='active')
+   BEGIN SELECT RAISE(ABORT,'Invalid event assignment'); END;
+  CREATE INDEX membership_org_active ON organization_memberships(organization_id,status,role,user_id);
+  CREATE INDEX registration_event_status ON registrations(event_id,status,created_at,participants);
+  CREATE INDEX session_user ON sessions(user_id);
+  CREATE TABLE registration_requests(
+   key_hash TEXT PRIMARY KEY NOT NULL CHECK(length(key_hash)=64),
+   event_id TEXT NOT NULL REFERENCES events(id),
+   request_hash TEXT NOT NULL CHECK(length(request_hash)=64),
+   registration_id TEXT NOT NULL UNIQUE REFERENCES registrations(id),
+   created_at TEXT NOT NULL,expires_at INTEGER NOT NULL CHECK(expires_at>0));
+  CREATE INDEX registration_request_expiry ON registration_requests(expires_at);
+  CREATE TRIGGER request_same_event_insert BEFORE INSERT ON registration_requests
+   WHEN NOT EXISTS(SELECT 1 FROM registrations WHERE id=NEW.registration_id AND event_id=NEW.event_id)
+   BEGIN SELECT RAISE(ABORT,'Invalid registration request'); END;
+  CREATE TRIGGER request_same_event_update BEFORE UPDATE ON registration_requests
+   WHEN NOT EXISTS(SELECT 1 FROM registrations WHERE id=NEW.registration_id AND event_id=NEW.event_id)
+   BEGIN SELECT RAISE(ABORT,'Invalid registration request'); END;
+  INSERT INTO schema_migrations(version,applied_at) VALUES(30,datetime('now'));
+  PRAGMA user_version=30;`);
+  if(db.prepare('PRAGMA foreign_key_check').all().length||db.prepare('PRAGMA integrity_check').get().integrity_check!=='ok')throw Error('Migration integrity check failed');
+  db.exec('COMMIT');
+ }catch(e){db.exec('ROLLBACK');db.close();throw e;}
+}
 return db;
 }

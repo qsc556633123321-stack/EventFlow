@@ -31,7 +31,9 @@ export function registerAccounts(app,{db,auth,policy,log,bad,hashPass,mailer,thr
   const v=req.body||{};if(!email(v.email)||!identifier(v.organizationId)||!['admin','staff'].includes(v.role))return bad(res,'邀請資料不正確');
   if(!policy.canManage(req.user,v.organizationId)||req.user.role==='admin'&&v.role!=='staff')return bad(res,'無權限',403);
   if(!db.prepare('SELECT id FROM organizations WHERE id=?').get(v.organizationId))return bad(res,'組織不存在',404);
-  const address=v.email.toLowerCase();if(db.prepare('SELECT id FROM users WHERE email=?').get(address))return bad(res,'此帳號已存在，請使用成員管理；跨組織加入尚未開放',409);
+  const address=v.email.trim().toLowerCase(),existing=db.prepare('SELECT id,role,disabled FROM users WHERE email=?').get(address);
+  if(existing&&(existing.role==='owner'||existing.disabled))return bad(res,'此帳號無法接受組織邀請',409);
+  if(existing&&db.prepare("SELECT user_id FROM organization_memberships WHERE user_id=? AND organization_id=? AND status='active'").get(existing.id,v.organizationId))return bad(res,'此帳號已是該組織的有效成員，請使用成員管理',409);
   const raw=randomBytes(32).toString('hex'),id=randomUUID(),expires=Date.now()+48*3600000;
   db.exec('BEGIN IMMEDIATE');try{
    db.prepare("UPDATE account_tokens SET revoked_at=? WHERE kind='invite' AND email=? AND organization_id=? AND used_at IS NULL AND revoked_at IS NULL").run(new Date().toISOString(),address,v.organizationId);
@@ -41,14 +43,39 @@ export function registerAccounts(app,{db,auth,policy,log,bad,hashPass,mailer,thr
   }catch{db.exec('ROLLBACK');bad(res,'建立邀請失敗',500)}
  });
  app.delete('/api/admin/invitations/:id',auth,(req,res)=>{const token=db.prepare("SELECT * FROM account_tokens WHERE id=? AND kind='invite'").get(req.params.id);if(!token||!policy.canManage(req.user,token.organization_id))return bad(res,'無權限',403);db.prepare('UPDATE account_tokens SET revoked_at=? WHERE id=? AND used_at IS NULL').run(new Date().toISOString(),token.id);log(req.user,'invitation.revoke',token.id,token.organization_id,{type:'invitation',targetId:token.id});res.json({ok:true})});
- app.post('/api/account/invitation/info',throttle,(req,res)=>{const token=get(req.body?.token,'invite');if(!token)return bad(res,'連結無效、已使用或已到期',400);res.json({organization:db.prepare('SELECT name FROM organizations WHERE id=?').get(token.organization_id)?.name,role:token.role,email:token.email.replace(/^(.{1,3})[^@]*@/,'$1***@'),expiresAt:token.expires_at})});
- app.post('/api/account/invitation/accept',throttle,(req,res)=>{
-  if(!password(req.body?.password))return bad(res,'密碼需為 12 至 256 字元');
+ app.post('/api/account/invitation/info',throttle,(req,res)=>{
+  const token=get(req.body?.token,'invite');if(!token)return bad(res,'連結無效、已使用或已到期',400);
+  const existing=db.prepare('SELECT id FROM users WHERE email=?').get(token.email);
+  res.json({organization:db.prepare('SELECT name FROM organizations WHERE id=?').get(token.organization_id)?.name,role:token.role,email:token.email.replace(/^(.{1,3})[^@]*@/,'$1***@'),expiresAt:token.expires_at,requiresLogin:!!existing});
+ });
+ function acceptInvitation(req,res){
   let begun=false;try{db.exec('BEGIN IMMEDIATE');begun=true;const token=get(req.body?.token,'invite');if(!token)throw Error();
-   const issuer=db.prepare('SELECT * FROM users WHERE id=? AND disabled=0').get(token.created_by);if(!issuer||!policy.canManage(issuer,token.organization_id)||issuer.role==='admin'&&token.role!=='staff'||db.prepare('SELECT id FROM users WHERE email=?').get(token.email))throw Error();
-   const id=randomUUID();db.prepare('INSERT INTO users(id,email,passhash,role,organization_id,staff_mode) VALUES(?,?,?,?,?,?)').run(id,token.email,hashPass(req.body.password),token.role,token.organization_id,token.role==='staff'?'assigned':'organization');
-   db.prepare('UPDATE account_tokens SET used_at=?,user_id=? WHERE id=?').run(new Date().toISOString(),id,token.id);log({id,email:token.email,organization_id:token.organization_id},'invitation.accept',token.id,token.organization_id,{type:'invitation',targetId:token.id});db.exec('COMMIT');begun=false;res.json({ok:true,message:'已加入組織，請登入。工作人員活動權限由管理員設定。'});
-  }catch{if(begun)db.exec('ROLLBACK');bad(res,'連結無效、已使用、已到期或邀請資格已變更',400)}
+   const issuer=db.prepare('SELECT id,email,role,disabled FROM users WHERE id=?').get(token.created_by);
+   const authority=issuer&&!issuer.disabled&&(issuer.role==='owner'||db.prepare("SELECT user_id FROM organization_memberships WHERE user_id=? AND organization_id=? AND status='active' AND role='admin'").get(issuer.id,token.organization_id));
+   if(!authority||issuer.role!=='owner'&&token.role!=='staff')throw Error();
+   let account=db.prepare('SELECT id,email,role,disabled FROM users WHERE email=?').get(token.email);const existing=!!account;
+   if(account){
+    if(account.role==='owner'||account.disabled||!req.user||req.user.id!==account.id)throw Object.assign(Error(),{status:403});
+    if(db.prepare("SELECT user_id FROM organization_memberships WHERE user_id=? AND organization_id=? AND status='active'").get(account.id,token.organization_id))throw Object.assign(Error(),{status:409});
+   }else{
+    if(!password(req.body?.password))throw Object.assign(Error(),{status:400});
+    const id=randomUUID();db.prepare('INSERT INTO users(id,email,passhash,role,organization_id,staff_mode) VALUES(?,?,?,?,?,?)').run(id,token.email,hashPass(req.body.password),token.role,token.organization_id,token.role==='staff'?'assigned':'organization');account={id,email:token.email};
+   }
+   const now=new Date().toISOString(),mode=token.role==='staff'?'assigned':'organization';
+   // Reactivating an old membership cannot resurrect old event grants; other organizations are untouched.
+   db.prepare('DELETE FROM user_event_access WHERE user_id=? AND event_id IN (SELECT id FROM events WHERE organization_id=?)').run(account.id,token.organization_id);
+   db.prepare("INSERT INTO organization_memberships(user_id,organization_id,role,status,staff_mode,created_at,updated_at) VALUES(?,?,?,'active',?,?,?) ON CONFLICT(user_id,organization_id) DO UPDATE SET role=excluded.role,status='active',staff_mode=excluded.staff_mode,updated_at=excluded.updated_at").run(account.id,token.organization_id,token.role,mode,now,now);
+   db.prepare('UPDATE account_tokens SET used_at=?,user_id=? WHERE id=?').run(now,account.id,token.id);
+   log({id:account.id,email:account.email,organization_id:token.organization_id},'invitation.accept',token.id,token.organization_id,{type:'invitation',targetId:token.id,requestId:req.requestId});
+   db.exec('COMMIT');begun=false;res.json({ok:true,organizationId:token.organization_id,existingAccount:existing,message:existing?'已加入組織，請在後台切換工作範圍。工作人員活動權限由管理員設定。':'已加入組織，請登入。工作人員活動權限由管理員設定。'});
+  }catch(err){if(begun)db.exec('ROLLBACK');bad(res,err.status===403?'請使用受邀帳號登入後接受邀請':err.status===409?'此帳號已是該組織的有效成員':'連結無效、已使用、已到期或邀請資格已變更',err.status||400)}
+ }
+ app.post('/api/account/invitation/accept',throttle,(req,res)=>{
+  const token=get(req.body?.token,'invite');if(!token)return bad(res,'連結無效、已使用或已到期',400);
+  const existing=db.prepare('SELECT id FROM users WHERE email=?').get(token.email);
+  // Existing identities prove possession through their authenticated session and its CSRF token.
+  if(existing)return auth(req,res,()=>acceptInvitation(req,res));
+  if(!password(req.body?.password))return bad(res,'密碼需為 12 至 256 字元');return acceptInvitation(req,res);
  });
  app.post('/api/account/reset/request',resetLimit,throttle,(req,res)=>{
   if(!email(req.body?.email))return bad(res,'請輸入有效 Email');const user=db.prepare('SELECT * FROM users WHERE email=? AND disabled=0').get(req.body.email.toLowerCase());

@@ -1,0 +1,31 @@
+{
+  "version":"3.0.0",
+  "schema":30,
+  "ownership":{
+    "database":["modules/database.js","modules/maintenance.js","scripts/maintenance.mjs"],
+    "backend":["modules/members.js","modules/accounts.js","modules/registrations.js"],
+    "frontend":["public/admin.html","public/governance.js","public/upgrade29.js","public/discovery.js","public/account.js","public/event.html","public/result.html","public/index.html","public/v30.css","public/account.html","public/ticket.js"],
+    "security":["modules/security.js","modules/policy.js","modules/validation.js"],
+    "qa":["test/v30.test.js","test/v25.test.js","test/v27.test.js","test/v28.test.js","test/v29.test.js","test/helpers.js"],
+    "primary":["server.js","modules/mail.js","package.json","package-lock.json","README.md","README_V3.0.md","CHANGELOG.md","public/blueprint.html","TEST_RESULTS_V3.0.md","V3_COLLABORATION.md"]
+  },
+  "membership":{
+    "table":"organization_memberships",
+    "primaryKey":["user_id","organization_id"],
+    "columns":{"user_id":"FK users","organization_id":"FK organizations","role":"admin|staff","status":"active|suspended","staff_mode":"organization|assigned","created_at":"ISO text","updated_at":"ISO text"},
+    "legacy":"Preserve users.role/organization_id/staff_mode; users.role=owner alone denotes platform owner; effective non-owner role/staff_mode comes ONLY from active membership in session organization_id. Migration backfills all users; legacy owner home membership role admin. Global disabled remains global. Existing (user_id,event_id) grants retained and membership-scoped via event org triggers.",
+    "session":"Reuse sessions.organization_id; owner null=all organizations. Non-owner login selects active home membership or first active; no active membership denies login. Auth must re-evaluate membership every request. Missing/inactive session membership denies. No role fallback to legacy user columns after migration.",
+    "me":"Existing keys preserved. Add platformRole and memberships:[{organizationId,name,role,staffMode,status}]. Non-owner choices active memberships; owner still platform owner.",
+    "context":"Existing POST /api/admin/context {organizationId} now permits active non-owner memberships, denies foreign/suspended/null; owner semantics unchanged. CSRF required. Response remains {ok:true}. GET /api/organizations remains active scope for non-owner; UI scope selector reads me.memberships."
+  },
+  "memberAPI":"Existing GET /api/admin/users remains array with legacy keys plus membership-aware active-scope rows. In scoped manager mode PUT manages membership role/status/staffMode/grants ONLY for current org; does not overwrite global users home org/role, global disabled or another org grants. disabled input maps membership suspension for non-owner targets; password changes only platform owner (global action). Owner all-org mode can retain legacy global account edit with documented scope and no implicit membership transfer. New users immediately get membership. Never create multiple memberships through arbitrary legacy PUT org edit; use invitation.",
+  "invite":"POST /api/admin/invitations same body. Allow existing non-owner enabled email if not already active target membership. invitation/info adds requiresLogin boolean. Existing-account accept requires authenticated matching user with CSRF, preserves password/home/grants other org; new user accept remains token+password public. Accept rechecks issuer active management membership/platform owner, creates target membership with staff assigned/no grants, consumes token transactionally. No implicit role upgrade or replacing active membership. Existing owner invites rejected.",
+  "idempotency":{
+    "header":"Idempotency-Key optional 32-64 hex",
+    "table":"registration_requests",
+    "columns":{"key_hash":"TEXT PK SHA256(raw key)","event_id":"FK events","request_hash":"SHA256(canonical validated registration payload)","registration_id":"FK registrations UNIQUE","created_at":"ISO text","expires_at":"INTEGER milliseconds"},
+    "behavior":"Same key+same event+same canonical payload returns existing {id,status,lookupCode}, even if capacity/status later changed; changed payload/key collision 409. Store key hash only. Creation and mapping in same BEGIN IMMEDIATE. Replay requires full original payload; no key-only credential lookup. Default expiry 24h; expired mapping must not create duplicate active registration. Header absent remains old behavior. Frontend keep key during failed retry, regenerate after changing payload; retain form and offer retry."
+  },
+  "scope":"Primary V3 milestone is real multi-org memberships plus UX01 admin invitations, UX03 idempotency and UX04 role-state cleanup; improve source context and onboarding. Safe lookup-code recovery UX02 remains explicitly documented unless implemented coherently; do not invent sent mail or real-device results. No external SMTP sending or destructive formal DB actions.",
+  "coordination":"All edits only in C:/Users/User/Documents/ChatGPT/KUHUB/eventflow-v3-work. Never edit files owned by another agent without explicit primary approval. Send proposed contract changes to primary. No agent commits. Primary owns deployment to D:/Coding/EventFlow after verified backup, integrates, runs full checks/tests before any commit."
+}

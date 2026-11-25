@@ -1,6 +1,6 @@
 {
-  "name": "eventflow-v29",
-  "version": "2.9.0",
+  "name": "eventflow-v30",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "scripts": {

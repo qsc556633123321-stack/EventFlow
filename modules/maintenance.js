@@ -12,7 +12,14 @@ export async function verifySnapshot(directory){
  }
  const actual=files(dir).filter(x=>x!=='manifest.json');if(actual.length!==seen.size||actual.some(x=>!seen.has(x)))throw Error('Unexpected backup content');
  const db=new DatabaseSync(path.join(dir,'database.sqlite'),{readOnly:true});try{
-  const version=db.prepare('PRAGMA user_version').get().user_version;if(version>29||version!==manifest.schemaVersion||db.prepare('PRAGMA integrity_check').get().integrity_check!=='ok'||db.prepare('PRAGMA foreign_key_check').all().length)throw Error('Invalid backup database');
+  const version=db.prepare('PRAGMA user_version').get().user_version;if(version>30||version!==manifest.schemaVersion||db.prepare('PRAGMA integrity_check').get().integrity_check!=='ok'||db.prepare('PRAGMA foreign_key_check').all().length)throw Error('Invalid backup database');
+  if(version===30){
+   for(const table of ['organization_memberships','registration_requests'])if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))throw Error('Missing V3 backup table');
+   if(!db.prepare('SELECT version FROM schema_migrations WHERE version=30').get())throw Error('Missing V3 migration record');
+   const membershipCount=db.prepare('SELECT COUNT(*) n FROM organization_memberships').get().n;
+   if(manifest.membershipCount!==membershipCount)throw Error('Membership count mismatch');
+   if(db.prepare('SELECT q.key_hash FROM registration_requests q JOIN registrations r ON r.id=q.registration_id WHERE q.event_id<>r.event_id LIMIT 1').get())throw Error('Invalid registration request reference');
+  }
   if(db.prepare("SELECT name FROM sqlite_master WHERE name='account_messages'").get()&&db.prepare('SELECT COUNT(*) n FROM account_messages').get().n&&!seen.has('account-mail.key'))throw Error('Account mail key missing');
   for(const row of db.prepare('SELECT cover_url url FROM events UNION SELECT logo_url FROM organizations UNION SELECT hero_url FROM organizations').all()){if(row.url?.startsWith('/uploads/')){const relative='uploads/'+row.url.slice(9);if(!seen.has(relative))throw Error('Referenced upload missing');}}
  }finally{db.close();}return manifest;
@@ -25,8 +32,8 @@ export async function createSnapshot({db,dataDir,uploadsDir,backupRoot=path.join
   for(const name of files(uploadsDir)){const dest=path.join(stage,'uploads',...name.split('/'));fs.mkdirSync(path.dirname(dest),{recursive:true});fs.copyFileSync(path.join(uploadsDir,...name.split('/')),dest);}
   if(fs.existsSync(path.join(dataDir,'account-mail.key')))fs.copyFileSync(path.join(dataDir,'account-mail.key'),path.join(stage,'account-mail.key'));
   const entries=[];for(const name of files(stage)){const file=path.join(stage,...name.split('/'));entries.push({path:name,size:fs.statSync(file).size,sha256:await hash(file)});}
-  const check=new DatabaseSync(path.join(stage,'database.sqlite'),{readOnly:true});const schemaVersion=check.prepare('PRAGMA user_version').get().user_version;check.close();
-  const manifest={format:'EventFlowSnapshot',version:1,id,createdAt:new Date().toISOString(),schemaVersion,files:entries};fs.writeFileSync(path.join(stage,'manifest.json'),JSON.stringify(manifest,null,2),{flag:'wx'});await verifySnapshot(stage);fs.renameSync(stage,destination);return {id,directory:destination,manifest};
+  const check=new DatabaseSync(path.join(stage,'database.sqlite'),{readOnly:true});const schemaVersion=check.prepare('PRAGMA user_version').get().user_version;const membershipCount=schemaVersion===30?check.prepare('SELECT COUNT(*) n FROM organization_memberships').get().n:undefined;check.close();
+  const manifest={format:'EventFlowSnapshot',version:1,id,createdAt:new Date().toISOString(),schemaVersion,...(membershipCount===undefined?{}:{membershipCount}),files:entries};fs.writeFileSync(path.join(stage,'manifest.json'),JSON.stringify(manifest,null,2),{flag:'wx'});await verifySnapshot(stage);fs.renameSync(stage,destination);return {id,directory:destination,manifest};
  }catch(e){if(inside(backupRoot,stage))fs.rmSync(stage,{recursive:true,force:true});throw e;}finally{if(descriptor!==undefined)fs.closeSync(descriptor);fs.unlinkSync(lock);}
 }
 export async function restoreSnapshot({directory,target,forbiddenRoots=[]}){

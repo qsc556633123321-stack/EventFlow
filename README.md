@@ -1,8 +1,8 @@
-# EventFlow V2.9
+# EventFlow V3.0
 
-Node.js 24+、Express、SQLite 的活動報名與管理平台。本機專案：D:\Coding\EventFlow。
+Node.js 24+、Express、SQLite 活動報名與管理平台。本機專案：D:\Coding\EventFlow。
 
-先停止舊版程序，再執行：
+先停止舊服務，再執行：
 
 ```powershell
 cd D:\Coding\EventFlow
@@ -12,10 +12,12 @@ npm test
 npm start
 ```
 
-前台 http://localhost:3000 · 後台 http://localhost:3000/admin.html · 系統藍圖 http://localhost:3000/blueprint.html 。不需 ZIP。
+前台 http://localhost:3000 · 後台 http://localhost:3000/admin.html · 藍圖 http://localhost:3000/blueprint.html 。不需 ZIP。
 
-- [V2.9 操作、設定與還原程序](README_V2.9.md)
-- [實際測試結果與人工驗收清單](TEST_RESULTS_V2.9.md)
-- [更新紀錄](CHANGELOG.md)
+- [V3.0 操作與相容性](README_V3.0.md)
+- [完整測試與待人工驗收](TEST_RESULTS_V3.0.md)
+- [多代理協作及開發報告](V3_COLLABORATION.md)
+- [資安檢查](SECURITY_REVIEW_V3.0.md) · [QA 檢查](QA_REVIEW_V3.0.md)
+- [API／Schema 協作契約](V3_CONTRACT.json) · [更新紀錄](CHANGELOG.md)
 
-首次啟動新版會自動備份 SQLite 並執行 migration 29；保留既有活動、報名、帳號、權限、QR 與簽到歷史。請先閱讀還原程序，正式資料不可用於破壞性測試。舊版文件僅供追溯，目前操作以 V2.9 文件為準。
+V3.0 實作多組織會員與有效角色切換、既有帳號接受新組織邀請、報名重送恢復與優先 UX 修正。SQLite migration 30 先一致性備份，再交易增量升級；保留既有活動、報名、帳號、組織、QR 與簽到。舊版說明保留作歷史；完整還原操作另見 V3.0 文件中的版本及環境設定說明。
