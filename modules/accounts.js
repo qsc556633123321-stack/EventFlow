@@ -1,6 +1,7 @@
+import {revokePasswordLinks} from './identity-security.js';
 import {randomBytes,randomUUID,createHash} from 'node:crypto';import {email,password,identifier} from './validation.js';
 const digest=v=>createHash('sha256').update(v).digest('hex');
-export function registerAccounts(app,{db,auth,policy,log,bad,hashPass,mailer,throttle}){
+export function registerAccounts(app,{db,auth,policy,log,bad,hashPass,mailer,throttle,memberPlatform}){
  app.use('/api/account',(req,res,next)=>{res.setHeader('Cache-Control','no-store');next()});
  const base=(()=>{try{const u=new URL(process.env.PUBLIC_BASE_URL);return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password?u.origin:''}catch{return ''}})();
  const url=(kind,token)=>(base||'')+'/account.html#'+kind+'='+token;
@@ -45,8 +46,8 @@ export function registerAccounts(app,{db,auth,policy,log,bad,hashPass,mailer,thr
  app.delete('/api/admin/invitations/:id',auth,(req,res)=>{const token=db.prepare("SELECT * FROM account_tokens WHERE id=? AND kind='invite'").get(req.params.id);if(!token||!policy.canManage(req.user,token.organization_id))return bad(res,'無權限',403);db.prepare('UPDATE account_tokens SET revoked_at=? WHERE id=? AND used_at IS NULL').run(new Date().toISOString(),token.id);log(req.user,'invitation.revoke',token.id,token.organization_id,{type:'invitation',targetId:token.id});res.json({ok:true})});
  app.post('/api/account/invitation/info',throttle,(req,res)=>{
   const token=get(req.body?.token,'invite');if(!token)return bad(res,'連結無效、已使用或已到期',400);
-  const existing=db.prepare('SELECT id FROM users WHERE email=?').get(token.email);
-  res.json({organization:db.prepare('SELECT name FROM organizations WHERE id=?').get(token.organization_id)?.name,role:token.role,email:token.email.replace(/^(.{1,3})[^@]*@/,'$1***@'),expiresAt:token.expires_at,requiresLogin:!!existing});
+  const existing=db.prepare('SELECT id,role FROM users WHERE email=?').get(token.email);
+  res.json({organization:db.prepare('SELECT name FROM organizations WHERE id=?').get(token.organization_id)?.name,role:token.role,email:token.email.replace(/^(.{1,3})[^@]*@/,'$1***@'),expiresAt:token.expires_at,requiresLogin:!!existing,requiresMemberLogin:existing?.role==='member'});
  });
  function acceptInvitation(req,res){
   let begun=false;try{db.exec('BEGIN IMMEDIATE');begun=true;const token=get(req.body?.token,'invite');if(!token)throw Error();
@@ -61,6 +62,7 @@ export function registerAccounts(app,{db,auth,policy,log,bad,hashPass,mailer,thr
     if(!password(req.body?.password))throw Object.assign(Error(),{status:400});
     const id=randomUUID();db.prepare('INSERT INTO users(id,email,passhash,role,organization_id,staff_mode) VALUES(?,?,?,?,?,?)').run(id,token.email,hashPass(req.body.password),token.role,token.organization_id,token.role==='staff'?'assigned':'organization');account={id,email:token.email};
    }
+   if(account.role==='member')db.prepare('UPDATE users SET role=?,organization_id=?,staff_mode=? WHERE id=?').run(token.role,token.organization_id,token.role==='staff'?'assigned':'organization',account.id);
    const now=new Date().toISOString(),mode=token.role==='staff'?'assigned':'organization';
    // Reactivating an old membership cannot resurrect old event grants; other organizations are untouched.
    db.prepare('DELETE FROM user_event_access WHERE user_id=? AND event_id IN (SELECT id FROM events WHERE organization_id=?)').run(account.id,token.organization_id);
@@ -72,9 +74,9 @@ export function registerAccounts(app,{db,auth,policy,log,bad,hashPass,mailer,thr
  }
  app.post('/api/account/invitation/accept',throttle,(req,res)=>{
   const token=get(req.body?.token,'invite');if(!token)return bad(res,'連結無效、已使用或已到期',400);
-  const existing=db.prepare('SELECT id FROM users WHERE email=?').get(token.email);
+  const existing=db.prepare('SELECT id,role FROM users WHERE email=?').get(token.email);
   // Existing identities prove possession through their authenticated session and its CSRF token.
-  if(existing)return auth(req,res,()=>acceptInvitation(req,res));
+  if(existing){const member=memberPlatform?.optional(req);if(member&&member.id===existing.id){if(!member.verified)return bad(res,'請先完成會員 Email 驗證',403);return memberPlatform.auth(req,res,()=>{req.user={...req.member,role:'member'};acceptInvitation(req,res)})}return auth(req,res,()=>acceptInvitation(req,res));}
   if(!password(req.body?.password))return bad(res,'密碼需為 12 至 256 字元');return acceptInvitation(req,res);
  });
  app.post('/api/account/reset/request',resetLimit,throttle,(req,res)=>{
@@ -86,7 +88,7 @@ export function registerAccounts(app,{db,auth,policy,log,bad,hashPass,mailer,thr
  });
  app.post('/api/account/reset/complete',throttle,(req,res)=>{
   if(!password(req.body?.password))return bad(res,'密碼需為 12 至 256 字元');let begun=false;try{db.exec('BEGIN IMMEDIATE');begun=true;const token=get(req.body?.token,'reset');if(!token)throw Error();const user=db.prepare('SELECT * FROM users WHERE id=? AND disabled=0').get(token.user_id);if(!user)throw Error();
-   db.prepare('UPDATE users SET passhash=? WHERE id=?').run(hashPass(req.body.password),user.id);db.prepare('DELETE FROM sessions WHERE user_id=?').run(user.id);db.prepare("UPDATE account_tokens SET used_at=? WHERE user_id=? AND kind='reset' AND used_at IS NULL AND revoked_at IS NULL").run(new Date().toISOString(),user.id);log(user,'account.password_reset',user.id,user.organization_id);db.exec('COMMIT');begun=false;res.json({ok:true,message:'密碼已更新，請重新登入。'});
+   db.prepare('UPDATE users SET passhash=? WHERE id=?').run(hashPass(req.body.password),user.id);revokePasswordLinks(db,user.id);db.prepare('DELETE FROM sessions WHERE user_id=?').run(user.id);db.prepare("UPDATE account_tokens SET used_at=? WHERE user_id=? AND kind='reset' AND used_at IS NULL AND revoked_at IS NULL").run(new Date().toISOString(),user.id);log(user,'account.password_reset',user.id,user.organization_id);db.exec('COMMIT');begun=false;res.json({ok:true,message:'密碼已更新，請重新登入。'});
   }catch{if(begun)db.exec('ROLLBACK');bad(res,'連結無效、已使用或已到期',400)}
  });
 }

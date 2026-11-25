@@ -12,16 +12,24 @@ export async function verifySnapshot(directory){
  }
  const actual=files(dir).filter(x=>x!=='manifest.json');if(actual.length!==seen.size||actual.some(x=>!seen.has(x)))throw Error('Unexpected backup content');
  const db=new DatabaseSync(path.join(dir,'database.sqlite'),{readOnly:true});try{
-  const version=db.prepare('PRAGMA user_version').get().user_version;if(version>30||version!==manifest.schemaVersion||db.prepare('PRAGMA integrity_check').get().integrity_check!=='ok'||db.prepare('PRAGMA foreign_key_check').all().length)throw Error('Invalid backup database');
-  if(version===30){
+  const version=db.prepare('PRAGMA user_version').get().user_version;if(version>31||version!==manifest.schemaVersion||db.prepare('PRAGMA integrity_check').get().integrity_check!=='ok'||db.prepare('PRAGMA foreign_key_check').all().length)throw Error('Invalid backup database');
+  if(version>=30){
    for(const table of ['organization_memberships','registration_requests'])if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))throw Error('Missing V3 backup table');
    if(!db.prepare('SELECT version FROM schema_migrations WHERE version=30').get())throw Error('Missing V3 migration record');
    const membershipCount=db.prepare('SELECT COUNT(*) n FROM organization_memberships').get().n;
    if(manifest.membershipCount!==membershipCount)throw Error('Membership count mismatch');
    if(db.prepare('SELECT q.key_hash FROM registration_requests q JOIN registrations r ON r.id=q.registration_id WHERE q.event_id<>r.event_id LIMIT 1').get())throw Error('Invalid registration request reference');
   }
-  if(db.prepare("SELECT name FROM sqlite_master WHERE name='account_messages'").get()&&db.prepare('SELECT COUNT(*) n FROM account_messages').get().n&&!seen.has('account-mail.key'))throw Error('Account mail key missing');
-  for(const row of db.prepare('SELECT cover_url url FROM events UNION SELECT logo_url FROM organizations UNION SELECT hero_url FROM organizations').all()){if(row.url?.startsWith('/uploads/')){const relative='uploads/'+row.url.slice(9);if(!seen.has(relative))throw Error('Referenced upload missing');}}
+  if(version===31){
+   for(const table of ['member_profiles','member_tokens','member_mail_outbox','notification_preferences','in_app_notifications','form_templates','chat_rooms','chat_room_members','chat_messages','chat_read_states','member_blocks','chat_mutes','chat_reports'])if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table))throw Error('Missing platform backup table');
+   if(!db.prepare('SELECT version FROM schema_migrations WHERE version=31').get())throw Error('Missing platform migration record');
+   if(manifest.memberProfileCount!==db.prepare('SELECT COUNT(*) n FROM member_profiles').get().n)throw Error('Member profile count mismatch');
+   if(!db.prepare('PRAGMA table_info(sessions)').all().some(c=>c.name==='audience')||!db.prepare('PRAGMA table_info(registrations)').all().some(c=>c.name==='member_user_id'))throw Error('Missing platform backup column');
+  }
+  for(const table of ['account_messages','member_mail_outbox'])if(db.prepare("SELECT name FROM sqlite_master WHERE name=?").get(table)&&db.prepare('SELECT COUNT(*) n FROM '+table).get().n&&!seen.has('account-mail.key'))throw Error('Account mail key missing');
+  if(seen.has('account-mail.key')&&fs.statSync(path.join(dir,'account-mail.key')).size!==32)throw Error('Invalid account mail key');
+  const referenceSql='SELECT cover_url url FROM events UNION SELECT logo_url FROM organizations UNION SELECT hero_url FROM organizations'+(version>=31?' UNION SELECT avatar_url FROM member_profiles':'');
+  for(const row of db.prepare(referenceSql).all()){if(row.url?.startsWith('/uploads/')){const relative='uploads/'+row.url.slice(9);if(!seen.has(relative))throw Error('Referenced upload missing');}}
  }finally{db.close();}return manifest;
 }
 export async function createSnapshot({db,dataDir,uploadsDir,backupRoot=path.join(dataDir,'backups')}){
@@ -32,8 +40,8 @@ export async function createSnapshot({db,dataDir,uploadsDir,backupRoot=path.join
   for(const name of files(uploadsDir)){const dest=path.join(stage,'uploads',...name.split('/'));fs.mkdirSync(path.dirname(dest),{recursive:true});fs.copyFileSync(path.join(uploadsDir,...name.split('/')),dest);}
   if(fs.existsSync(path.join(dataDir,'account-mail.key')))fs.copyFileSync(path.join(dataDir,'account-mail.key'),path.join(stage,'account-mail.key'));
   const entries=[];for(const name of files(stage)){const file=path.join(stage,...name.split('/'));entries.push({path:name,size:fs.statSync(file).size,sha256:await hash(file)});}
-  const check=new DatabaseSync(path.join(stage,'database.sqlite'),{readOnly:true});const schemaVersion=check.prepare('PRAGMA user_version').get().user_version;const membershipCount=schemaVersion===30?check.prepare('SELECT COUNT(*) n FROM organization_memberships').get().n:undefined;check.close();
-  const manifest={format:'EventFlowSnapshot',version:1,id,createdAt:new Date().toISOString(),schemaVersion,...(membershipCount===undefined?{}:{membershipCount}),files:entries};fs.writeFileSync(path.join(stage,'manifest.json'),JSON.stringify(manifest,null,2),{flag:'wx'});await verifySnapshot(stage);fs.renameSync(stage,destination);return {id,directory:destination,manifest};
+  const check=new DatabaseSync(path.join(stage,'database.sqlite'),{readOnly:true});const schemaVersion=check.prepare('PRAGMA user_version').get().user_version;const membershipCount=schemaVersion>=30?check.prepare('SELECT COUNT(*) n FROM organization_memberships').get().n:undefined;const memberProfileCount=schemaVersion>=31?check.prepare('SELECT COUNT(*) n FROM member_profiles').get().n:undefined;check.close();
+  const manifest={format:'EventFlowSnapshot',version:1,id,createdAt:new Date().toISOString(),schemaVersion,...(membershipCount===undefined?{}:{membershipCount}),...(memberProfileCount===undefined?{}:{memberProfileCount}),files:entries};fs.writeFileSync(path.join(stage,'manifest.json'),JSON.stringify(manifest,null,2),{flag:'wx'});await verifySnapshot(stage);fs.renameSync(stage,destination);return {id,directory:destination,manifest};
  }catch(e){if(inside(backupRoot,stage))fs.rmSync(stage,{recursive:true,force:true});throw e;}finally{if(descriptor!==undefined)fs.closeSync(descriptor);fs.unlinkSync(lock);}
 }
 export async function restoreSnapshot({directory,target,forbiddenRoots=[]}){
@@ -42,7 +50,7 @@ export async function restoreSnapshot({directory,target,forbiddenRoots=[]}){
  const stage=target+'.restoring-'+randomUUID();if(fs.existsSync(stage))throw Error('Restore staging exists');
  try{fs.mkdirSync(stage);fs.mkdirSync(path.join(stage,'data'));fs.mkdirSync(path.join(stage,'public','uploads'),{recursive:true});
   for(const item of manifest.files){const dest=item.path==='database.sqlite'?path.join(stage,'data','eventflow.sqlite'):item.path==='account-mail.key'?path.join(stage,'data','account-mail.key'):path.join(stage,'public',...item.path.split('/'));fs.mkdirSync(path.dirname(dest),{recursive:true});fs.copyFileSync(path.join(directory,...item.path.split('/')),dest);}
-  const restored=new DatabaseSync(path.join(stage,'data','eventflow.sqlite'));try{restored.exec('BEGIN IMMEDIATE; DELETE FROM sessions;');if(restored.prepare("SELECT name FROM sqlite_master WHERE name='account_tokens'").get())restored.prepare('UPDATE account_tokens SET revoked_at=? WHERE used_at IS NULL AND revoked_at IS NULL').run(new Date().toISOString());for(const table of ['notifications','account_messages'])if(restored.prepare("SELECT name FROM sqlite_master WHERE name=?").get(table)&&restored.prepare('PRAGMA table_info('+table+')').all().some(x=>x.name==='delivery_state'))restored.exec("UPDATE "+table+" SET status='uncertain',delivery_state='unknown' WHERE status IN ('queued','retry','sending')");restored.exec('COMMIT');if(restored.prepare('PRAGMA integrity_check').get().integrity_check!=='ok'||restored.prepare('PRAGMA foreign_key_check').all().length)throw Error('Restore integrity check failed');}finally{restored.close();}
+  const restored=new DatabaseSync(path.join(stage,'data','eventflow.sqlite'));try{restored.exec('BEGIN IMMEDIATE; DELETE FROM sessions;');if(restored.prepare("SELECT name FROM sqlite_master WHERE name='account_tokens'").get())restored.prepare('UPDATE account_tokens SET revoked_at=? WHERE used_at IS NULL AND revoked_at IS NULL').run(new Date().toISOString());if(restored.prepare("SELECT name FROM sqlite_master WHERE name='member_tokens'").get())restored.prepare('UPDATE member_tokens SET used_at=? WHERE used_at IS NULL').run(new Date().toISOString());for(const table of ['notifications','account_messages','member_mail_outbox'])if(restored.prepare("SELECT name FROM sqlite_master WHERE name=?").get(table)&&restored.prepare('PRAGMA table_info('+table+')').all().some(x=>x.name==='delivery_state'))restored.exec("UPDATE "+table+" SET status='uncertain',delivery_state='unknown' WHERE status IN ('queued','retry','sending')");restored.exec('COMMIT');if(restored.prepare('PRAGMA integrity_check').get().integrity_check!=='ok'||restored.prepare('PRAGMA foreign_key_check').all().length)throw Error('Restore integrity check failed');}finally{restored.close();}
   fs.writeFileSync(path.join(stage,'RESTORE.json'),JSON.stringify({source:manifest.id,restoredAt:new Date().toISOString(),sessionsRevoked:true,accountLinksRevoked:true,pendingMailPaused:true},null,2));fs.renameSync(stage,target);return {target,source:manifest.id};
  }catch(e){if(stage.startsWith(target+'.restoring-'))fs.rmSync(stage,{recursive:true,force:true});throw e;}
 }

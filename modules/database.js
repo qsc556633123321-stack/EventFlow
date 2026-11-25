@@ -3,13 +3,14 @@ import fs from 'node:fs';import path from 'node:path';import {randomUUID} from '
 export async function openDatabase(dataDir){
 fs.mkdirSync(dataDir,{recursive:true});
 const db=new DatabaseSync(path.join(dataDir,'eventflow.sqlite'),{timeout:5000});
-if(db.prepare('PRAGMA user_version').get().user_version>30){db.close();throw Error('Database version is newer than this application');}
+if(db.prepare('PRAGMA user_version').get().user_version>31){db.close();throw Error('Database version is newer than this application');}
+const needs31=!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get()||!db.prepare('SELECT version FROM schema_migrations WHERE version=31').get();
 const needs30=!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get()||!db.prepare('SELECT version FROM schema_migrations WHERE version=30').get();
 const needs29=!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get()||!db.prepare('SELECT version FROM schema_migrations WHERE version=29').get();
 const needs28=!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get()||!db.prepare('SELECT version FROM schema_migrations WHERE version=28').get();
-if(needs30&&db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get()){
+if(needs31&&db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get()){
  const dest=path.join(dataDir,'migration-backups');fs.mkdirSync(dest,{recursive:true});
- const file=path.join(dest,'pre-v30-'+Date.now()+'-'+randomUUID()+'.sqlite');
+ const file=path.join(dest,'pre-v31-'+Date.now()+'-'+randomUUID()+'.sqlite');
  await backup(db,file);
  // Normalize the backup only to DELETE journaling so it is one portable SQLite file.
  const verified=new DatabaseSync(file);
@@ -122,6 +123,62 @@ if(needs30){
    BEGIN SELECT RAISE(ABORT,'Invalid registration request'); END;
   INSERT INTO schema_migrations(version,applied_at) VALUES(30,datetime('now'));
   PRAGMA user_version=30;`);
+  if(db.prepare('PRAGMA foreign_key_check').all().length||db.prepare('PRAGMA integrity_check').get().integrity_check!=='ok')throw Error('Migration integrity check failed');
+  db.exec('COMMIT');
+ }catch(e){db.exec('ROLLBACK');db.close();throw e;}
+}
+if(needs31){
+ db.exec('BEGIN IMMEDIATE');try{
+  const additions=[
+   ['sessions','audience',"TEXT NOT NULL DEFAULT 'admin' CHECK(audience IN ('admin','member'))"],
+   ['events','member_required','INTEGER NOT NULL DEFAULT 0 CHECK(member_required IN (0,1))'],
+   ['events','chat_enabled','INTEGER NOT NULL DEFAULT 0 CHECK(chat_enabled IN (0,1))'],
+   ['events','chat_join_policy',"TEXT NOT NULL DEFAULT 'confirmed' CHECK(chat_join_policy IN ('members','confirmed','staff'))"],
+   ['events','form_settings',"TEXT NOT NULL DEFAULT '{}'"],['events','notification_settings',"TEXT NOT NULL DEFAULT '{}'"],
+   ['events','starts_at',"TEXT NOT NULL DEFAULT ''"],['events','ends_at',"TEXT NOT NULL DEFAULT ''"],
+   ['registrations','member_user_id','TEXT REFERENCES users(id)']
+  ];
+  for(const [table,column,definition] of additions)if(!db.prepare('PRAGMA table_info('+table+')').all().some(c=>c.name===column))db.exec('ALTER TABLE '+table+' ADD COLUMN '+column+' '+definition);
+  db.exec(`
+   CREATE TABLE member_profiles(user_id TEXT PRIMARY KEY REFERENCES users(id),public_id TEXT NOT NULL UNIQUE,full_name TEXT NOT NULL DEFAULT '',phone TEXT NOT NULL DEFAULT '',nickname TEXT NOT NULL,avatar_url TEXT NOT NULL DEFAULT '',common_answers TEXT NOT NULL DEFAULT '{}',email_verified_at TEXT,status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','disabled','deletion_requested')),created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+   CREATE TABLE member_tokens(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),kind TEXT NOT NULL CHECK(kind IN ('verify','reset')),token_hash TEXT NOT NULL UNIQUE,expires_at INTEGER NOT NULL,used_at TEXT,created_at TEXT NOT NULL);
+   CREATE TABLE member_mail_outbox(id TEXT PRIMARY KEY,user_id TEXT REFERENCES users(id),token_id TEXT REFERENCES member_tokens(id),kind TEXT,payload TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'queued',attempts INTEGER NOT NULL DEFAULT 0,next_attempt_at INTEGER NOT NULL DEFAULT 0,last_error TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,sent_at TEXT,message_id TEXT NOT NULL DEFAULT '',delivery_state TEXT NOT NULL DEFAULT 'unknown',lease_until INTEGER NOT NULL DEFAULT 0);
+   CREATE TABLE notification_preferences(user_id TEXT PRIMARY KEY REFERENCES users(id),preferences TEXT NOT NULL DEFAULT '{}',dm_policy TEXT NOT NULL DEFAULT 'requests' CHECK(dm_policy IN ('open','requests','closed')),show_presence INTEGER NOT NULL DEFAULT 1 CHECK(show_presence IN (0,1)));
+   CREATE TABLE in_app_notifications(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT NOT NULL REFERENCES users(id),kind TEXT NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL DEFAULT '',href TEXT NOT NULL DEFAULT '/member.html',event_key TEXT,created_at TEXT NOT NULL,read_at TEXT,UNIQUE(user_id,event_key));
+   CREATE TABLE form_templates(id TEXT PRIMARY KEY,organization_id TEXT REFERENCES organizations(id),created_by TEXT REFERENCES users(id),name TEXT NOT NULL,fields TEXT NOT NULL,settings TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+   CREATE TABLE chat_rooms(id TEXT PRIMARY KEY,kind TEXT NOT NULL CHECK(kind IN ('public','event','direct')),event_id TEXT UNIQUE REFERENCES events(id),title TEXT NOT NULL,direct_key TEXT UNIQUE,created_by TEXT REFERENCES users(id),created_at TEXT NOT NULL);
+   CREATE TABLE chat_room_members(room_id TEXT NOT NULL REFERENCES chat_rooms(id),user_id TEXT NOT NULL REFERENCES users(id),state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','pending','declined')),created_at TEXT NOT NULL,PRIMARY KEY(room_id,user_id));
+   CREATE TABLE chat_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL REFERENCES chat_rooms(id),sender_id TEXT NOT NULL REFERENCES users(id),body TEXT NOT NULL,kind TEXT NOT NULL DEFAULT 'message' CHECK(kind IN ('message','announcement')),pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1)),deleted_at TEXT,created_at TEXT NOT NULL);
+   CREATE TABLE chat_read_states(room_id TEXT NOT NULL REFERENCES chat_rooms(id),user_id TEXT NOT NULL REFERENCES users(id),last_read_id INTEGER NOT NULL DEFAULT 0 CHECK(last_read_id>=0),updated_at TEXT NOT NULL,PRIMARY KEY(room_id,user_id));
+   CREATE TABLE member_blocks(blocker_id TEXT NOT NULL REFERENCES users(id),blocked_id TEXT NOT NULL REFERENCES users(id),created_at TEXT NOT NULL,PRIMARY KEY(blocker_id,blocked_id),CHECK(blocker_id<>blocked_id));
+   CREATE TABLE chat_mutes(room_id TEXT NOT NULL REFERENCES chat_rooms(id),user_id TEXT NOT NULL REFERENCES users(id),until_at INTEGER NOT NULL,reason TEXT NOT NULL DEFAULT '',created_by TEXT REFERENCES users(id),PRIMARY KEY(room_id,user_id));
+   CREATE TABLE chat_reports(id TEXT PRIMARY KEY,message_id INTEGER REFERENCES chat_messages(id),reporter_id TEXT REFERENCES users(id),reason TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved','dismissed')),resolution TEXT NOT NULL DEFAULT '',resolved_by TEXT REFERENCES users(id),created_at TEXT NOT NULL,resolved_at TEXT);
+   CREATE INDEX session_audience_user ON sessions(audience,user_id,expires);
+   CREATE INDEX registration_member_status ON registrations(member_user_id,status,created_at);
+   CREATE INDEX member_tokens_expiry ON member_tokens(user_id,kind,expires_at);
+   CREATE INDEX member_mail_pending ON member_mail_outbox(status,next_attempt_at);
+   CREATE INDEX member_notifications_unread ON in_app_notifications(user_id,read_at,id);
+   CREATE INDEX member_notifications_kind ON in_app_notifications(user_id,kind,id);
+   CREATE INDEX form_templates_org ON form_templates(organization_id,name);
+   CREATE INDEX chat_messages_room_cursor ON chat_messages(room_id,id);
+   CREATE INDEX chat_members_user ON chat_room_members(user_id,state,room_id);
+   CREATE INDEX chat_reports_status_message ON chat_reports(status,message_id,created_at);
+   CREATE INDEX chat_blocks_target ON member_blocks(blocked_id,blocker_id);
+  `);
+  const at=new Date().toISOString();
+  const templates=[
+   ['general','一般活動報名表',[]],
+   ['travel','旅遊團報名表',[{id:'travel_diet',label:'飲食需求',type:'select',required:false,options:['一般','素食','其他']}]],
+   ['course','課程報名表',[{id:'course_experience',label:'相關學習經驗',type:'textarea',required:false}]],
+   ['lecture','講座報名表',[{id:'lecture_question',label:'想詢問講者的問題',type:'textarea',required:false}]],
+   ['meal','聚餐報名表',[{id:'meal_diet',label:'餐食選擇',type:'select',required:true,options:['一般','素食']}]],
+   ['competition','比賽報名表',[{id:'competition_team',label:'隊伍名稱',type:'text',required:true}]],
+   ['blank','空白自訂表單',[]]
+  ];
+  const insert=db.prepare('INSERT INTO form_templates(id,organization_id,created_by,name,fields,settings,created_at,updated_at) VALUES(?,NULL,NULL,?,?,?,?,?)');
+  for(const [id,name,fields] of templates)insert.run('builtin-'+id,name,JSON.stringify(fields),'{}',at,at);
+  db.prepare("INSERT INTO chat_rooms(id,kind,title,created_at) VALUES('public','public','公共聊天室',?)").run(at);
+  db.prepare('INSERT INTO schema_migrations(version,applied_at) VALUES(31,?)').run(at);db.exec('PRAGMA user_version=31');
   if(db.prepare('PRAGMA foreign_key_check').all().length||db.prepare('PRAGMA integrity_check').get().integrity_check!=='ok')throw Error('Migration integrity check failed');
   db.exec('COMMIT');
  }catch(e){db.exec('ROLLBACK');db.close();throw e;}

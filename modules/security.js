@@ -17,7 +17,7 @@ export function createSecurity(db,{log}){
  function auth(req,res,next){
   const token=cookieToken(req);if(!/^[a-f0-9]{64}$/.test(token))return res.status(401).json({error:'請先登入'});
   // The platform role is read only from users. Effective organization roles never fall back to legacy columns.
-  const row=db.prepare('SELECT u.id,u.email,u.role platformRole,u.organization_id home_organization_id,s.organization_id session_organization_id FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires>? AND u.disabled=0').get(sha(token),Date.now());
+  const row=db.prepare("SELECT u.id,u.email,u.role platformRole,u.organization_id home_organization_id,s.organization_id session_organization_id FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires>? AND s.audience='admin' AND u.disabled=0").get(sha(token),Date.now());
   if(!row||!['owner','admin','staff'].includes(row.platformRole))return res.status(401).json({error:'登入已失效'});
   let user;
   if(row.platformRole==='owner'){
@@ -65,7 +65,7 @@ export function installSecurity(app){
   const origin=req.get('origin');
   if(req.get('sec-fetch-site')==='cross-site')return res.status(403).json({error:'禁止跨來源操作',code:'ORIGIN_REJECTED'});
   if(origin){try{const u=new URL(origin);if(!['http:','https:'].includes(u.protocol)||u.host!==req.get('host')||(req.secure&&u.protocol!=='https:'))throw Error();}catch{return res.status(403).json({error:'來源驗證失敗',code:'ORIGIN_REJECTED'});}}
-  if(req.method!=='DELETE'&&!req.path.startsWith('/api/admin/upload')&&!req.is('application/json'))return res.status(415).json({error:'請使用 JSON 格式提交資料'});
+  if(req.method!=='DELETE'&&!req.path.startsWith('/api/admin/upload')&&req.path!=='/api/member/avatar'&&!req.is('application/json'))return res.status(415).json({error:'請使用 JSON 格式提交資料'});
   next();
  });
 }

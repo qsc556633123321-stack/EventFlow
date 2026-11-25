@@ -22,6 +22,7 @@ export async function server(t,extra={}){
 
 // Build genuine older fixtures by removing only V3 objects before applying historical downgrades.
 export function removeV30(db){
+ removeV31(db);
  if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='organization_memberships'").get())return;
  db.exec(`DROP TRIGGER IF EXISTS access_same_org_insert;DROP TRIGGER IF EXISTS access_same_org_update;
  DROP TRIGGER IF EXISTS request_same_event_insert;DROP TRIGGER IF EXISTS request_same_event_update;
@@ -30,6 +31,15 @@ export function removeV30(db){
  DELETE FROM schema_migrations WHERE version=30;PRAGMA user_version=29;
  CREATE TRIGGER access_same_org_insert BEFORE INSERT ON user_event_access WHEN NOT EXISTS(SELECT 1 FROM users u JOIN events e ON e.organization_id=u.organization_id WHERE u.id=NEW.user_id AND e.id=NEW.event_id AND u.role='staff') BEGIN SELECT RAISE(ABORT,'Invalid event assignment'); END;
  CREATE TRIGGER access_same_org_update BEFORE UPDATE ON user_event_access WHEN NOT EXISTS(SELECT 1 FROM users u JOIN events e ON e.organization_id=u.organization_id WHERE u.id=NEW.user_id AND e.id=NEW.event_id AND u.role='staff') BEGIN SELECT RAISE(ABORT,'Invalid event assignment'); END;`);
+}
+
+// Remove the real platform additions before constructing genuine schema30/29 fixtures.
+export function removeV31(db){
+ if(!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='member_profiles'").get())return;
+ for(const table of ['chat_reports','chat_mutes','chat_read_states','chat_messages','chat_room_members','chat_rooms','member_blocks','in_app_notifications','notification_preferences','member_mail_outbox','member_tokens','member_profiles','form_templates'])db.exec('DROP TABLE '+table);
+ db.exec('DROP INDEX IF EXISTS session_audience_user;DROP INDEX IF EXISTS registration_member_status;');
+ for(const [table,columns] of [['sessions',['audience']],['registrations',['member_user_id']],['events',['member_required','chat_enabled','chat_join_policy','form_settings','notification_settings','starts_at','ends_at']]])for(const column of columns)db.exec('ALTER TABLE '+table+' DROP COLUMN '+column);
+ db.exec('DELETE FROM schema_migrations WHERE version=31;PRAGMA user_version=30;');
 }
 
 

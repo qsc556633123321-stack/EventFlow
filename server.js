@@ -1,3 +1,9 @@
+import http from 'node:http';
+import {createMemberPlatform} from './modules/member-platform.js';
+import {registerChat} from './modules/chat.js';
+import {registerForms} from './modules/forms.js';
+import {savePlatformEvent,notifyEventChange,createUpcomingNotifier,registerPlatformAdmin} from './modules/platform-admin.js';
+import {platformEvents} from './modules/platform-events.js';
 import express from 'express';
 import QRCode from 'qrcode';
 import {openDatabase} from './modules/database.js';
@@ -33,6 +39,7 @@ const validCategory=s=>['旅遊','講座','營隊','體驗'].includes(s);
 const app=express();app.disable('x-powered-by');
 const audit=createAudit(db);const {log}=audit;
 app.use(audit.middleware);installSecurity(app);
+app.use((req,res,next)=>{res.on('finish',()=>{if(req.path.startsWith('/api/')&&!['GET','HEAD','OPTIONS'].includes(req.method)&&res.statusCode<400)platformEvents.emit('sessions:changed',{reason:'api-mutation'})});next()});
 app.use('/admin.html',(req,res,next)=>{res.setHeader('Cache-Control','no-store');next();});
 app.use(express.json({limit:'1mb'}));app.use(routeValidation);app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','same-origin');res.setHeader('X-Frame-Options','DENY');next();});
 const sha=x=>createHash('sha256').update(x).digest('hex');
@@ -42,15 +49,18 @@ const bad=(res,msg,code=400)=>res.status(code).json({error:msg});
 const policy=createPolicy(db);const {canManage,canView,canOperate,visibleEvents}=policy;
 const security=createSecurity(db,{log});security.configurePasswords(verifyPass,hashPass);
 const {auth,throttle}=security;
+const memberPlatform=createMemberPlatform({db,log,bad,hashPass,verifyPass,mailer,uploadsDir:uploads});memberPlatform.register(app);mailer.setNotifier(memberPlatform.notify);
+const chat=registerChat(app,{db,memberPlatform,auth,policy,log,bad});registerForms(app,{db,auth,policy,log,bad});registerPlatformAdmin(app,{db,auth,policy,bad,log,fieldsValid});
+const runUpcoming=createUpcomingNotifier({db,queueMail});setInterval(()=>{try{runUpcoming()}catch{console.error('Upcoming notification scheduling failed')}},60000).unref();
 const eventRow=id=>db.prepare('SELECT * FROM events WHERE id=?').get(id);
-const eventJSON=e=>({...e,archived:!!e.archived,reviewRequired:!!e.review_required,allowWaitlist:!!e.allow_waitlist,autoWaitlist:!!e.auto_waitlist,customFields:JSON.parse(e.custom_fields),organizationId:e.organization_id,maxPerRegistration:e.max_per_registration,coverUrl:e.cover_url,category:e.category});
+const eventJSON=e=>({...e,archived:!!e.archived,reviewRequired:!!e.review_required,allowWaitlist:!!e.allow_waitlist,autoWaitlist:!!e.auto_waitlist,customFields:JSON.parse(e.custom_fields),organizationId:e.organization_id,maxPerRegistration:e.max_per_registration,coverUrl:e.cover_url,category:e.category,memberRequired:!!e.member_required,chatEnabled:!!e.chat_enabled,chatJoinPolicy:e.chat_join_policy,formSettings:JSON.parse(e.form_settings||'{}'),notificationSettings:JSON.parse(e.notification_settings||'{}'),startsAt:e.starts_at,endsAt:e.ends_at});
 const regJSON=r=>({...r,eventId:r.event_id,participants:r.participants,customAnswers:JSON.parse(r.custom_answers),fieldSnapshot:JSON.parse(r.field_snapshot),createdAt:r.created_at,reviewNote:r.review_note});
 app.post('/api/setup',throttle,(req,res)=>{
  // Initial owner creation is local-only unless explicitly opted in for classroom deployment.
  const remote=req.socket.remoteAddress||'';
  const localHost=/^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(req.get('host')||'');const forwarded=!!(req.get('x-forwarded-for')||req.get('cf-connecting-ip')||req.get('forwarded')||req.get('x-forwarded-proto'));if((!['127.0.0.1','::1','::ffff:127.0.0.1'].includes(remote)||!localHost||forwarded) && process.env.ALLOW_REMOTE_SETUP!=='1')return bad(res,'請在伺服器本機完成初始管理員設定',403);
 const {email,password}=req.body||{};if(!/^\S+@\S+\.\S+$/.test(email||'')||typeof password!=='string'||password.length<12)return bad(res,'請使用有效 Email 與至少 12 字元密碼');
- let begun=false;try{db.exec('BEGIN IMMEDIATE');begun=true;if(db.prepare('SELECT count(*) n FROM users').get().n){db.exec('ROLLBACK');begun=false;return bad(res,'系統已初始化',403)}
+ let begun=false;try{db.exec('BEGIN IMMEDIATE');begun=true;if(db.prepare("SELECT count(*) n FROM users WHERE role='owner'").get().n){db.exec('ROLLBACK');begun=false;return bad(res,'系統已初始化',403)}
  const org='org-default',id=randomUUID(),at=new Date().toISOString();db.prepare('INSERT OR IGNORE INTO organizations(id,name) VALUES(?,?)').run(org,'預設主辦單位');db.prepare('INSERT INTO users(id,email,passhash,role,organization_id) VALUES(?,?,?,?,?)').run(id,email.toLowerCase(),hashPass(password),'owner',org);
  db.prepare("INSERT INTO organization_memberships(user_id,organization_id,role,status,staff_mode,created_at,updated_at) VALUES(?,?,'admin','active','organization',?,?)").run(id,org,at,at);log(null,'setup','initial owner');db.exec('COMMIT');begun=false;res.json({ok:true});
  }catch{if(begun)db.exec('ROLLBACK');bad(res,'無法建立系統管理員',500)}
@@ -71,8 +81,8 @@ app.put('/api/organizations/:id',auth,(req,res)=>{
  db.prepare('UPDATE organizations SET name=?,email=?,phone=? WHERE id=?').run(name,email,phone,req.params.id);log(req.user,'organization.update',req.params.id);res.json({ok:true});
 });
 const promoteWaitlist=createWaitlist(db,queueMail,log);
-registerReviews(app,{db,auth,policy,log,bad,queueMail,promoteWaitlist,throttle});
-registerAccounts(app,{db,auth,policy,log,bad,hashPass,mailer,throttle});
+registerReviews(app,{db,auth,policy,log,bad,queueMail,promoteWaitlist,throttle,memberPlatform});
+registerAccounts(app,{db,auth,policy,log,bad,hashPass,mailer,throttle,memberPlatform});
 const configuredBackup=path.resolve(process.env.BACKUP_DIR||path.join(dataDir,'backups'));const publishedRoot=fs.realpathSync(path.join(root,'public'));fs.mkdirSync(configuredBackup,{recursive:true});const resolvedBackup=fs.realpathSync(configuredBackup);if([publishedRoot,fs.realpathSync(uploads)].some(p=>resolvedBackup===p||resolvedBackup.startsWith(p+path.sep)))throw Error('BACKUP_DIR must be outside the public directory');
 const maintenance=createMaintenance({db,dataDir,uploadsDir:uploads,log});
 registerMaintenance(app,{db,auth,bad,maintenance,mailer});
@@ -80,7 +90,7 @@ setInterval(()=>maintenance.runDue().catch(()=>console.error('Scheduled maintena
 registerMembers(app,{db,auth,policy,log,hashPass,bad});
 registerEventArchive(app,{db,auth,policy,log,bad});
 app.get('/api/me',auth,(req,res)=>{const memberships=db.prepare("SELECT m.organization_id organizationId,o.name,m.role,m.staff_mode staffMode,m.status FROM organization_memberships m JOIN organizations o ON o.id=m.organization_id WHERE m.user_id=? AND m.status='active' ORDER BY o.name,m.organization_id").all(req.user.id);res.json({...req.user,platformRole:req.user.platformRole||req.user.role,memberships,csrfToken:csrfFor(cookieToken(req))})});
-app.get('/api/events',(req,res)=>{const rows=db.prepare("SELECT e.*,o.name organization_name,COALESCE(SUM(r.participants),0) occupied FROM events e JOIN organizations o ON o.id=e.organization_id LEFT JOIN registrations r ON r.event_id=e.id AND r.status IN ('confirmed','pending') WHERE e.archived=0 AND e.status='open' GROUP BY e.id").all();res.json(rows.map(e=>({id:e.id,title:e.title,date:e.date,location:e.location,capacity:e.capacity,coverUrl:e.cover_url,category:e.category,price:e.price,description:e.description,status:e.status,allowWaitlist:!!e.allow_waitlist,allow_waitlist:!!e.allow_waitlist,maxPerRegistration:e.max_per_registration,remaining:Math.max(0,e.capacity-e.occupied),organizationName:e.organization_name,organizationId:e.organization_id}))) });
+app.get('/api/events',(req,res)=>{const rows=db.prepare("SELECT e.*,o.name organization_name,COALESCE(SUM(r.participants),0) occupied FROM events e JOIN organizations o ON o.id=e.organization_id LEFT JOIN registrations r ON r.event_id=e.id AND r.status IN ('confirmed','pending') WHERE e.archived=0 AND e.status='open' GROUP BY e.id").all();res.json(rows.map(e=>({id:e.id,title:e.title,date:e.date,location:e.location,capacity:e.capacity,coverUrl:e.cover_url,category:e.category,price:e.price,description:e.description,status:e.status,allowWaitlist:!!e.allow_waitlist,allow_waitlist:!!e.allow_waitlist,maxPerRegistration:e.max_per_registration,remaining:Math.max(0,e.capacity-e.occupied),organizationName:e.organization_name,organizationId:e.organization_id,memberRequired:!!e.member_required,chatEnabled:!!e.chat_enabled,startsAt:e.starts_at,endsAt:e.ends_at}))) });
 app.get('/api/events/:id',(req,res)=>{const e=eventRow(req.params.id);if(!e||e.archived||!['open','closed'].includes(e.status))return bad(res,'找不到活動',404);const occupied=db.prepare("SELECT COALESCE(SUM(participants),0) n FROM registrations WHERE event_id=? AND status IN ('confirmed','pending')").get(e.id).n;res.json({...eventJSON(e),organizationName:db.prepare('SELECT name FROM organizations WHERE id=?').get(e.organization_id)?.name,remaining:Math.max(0,e.capacity-occupied)});});
 app.get('/api/admin/events',auth,(req,res)=>{const rows=visibleEvents(req.user,req.csvExport?'export':'read');res.json(rows.map(e=>({...eventJSON(e),permissions:{manage:canManage(req.user,e.organization_id),review:canOperate(req.user,e,'review'),checkin:canOperate(req.user,e,'checkin'),export:canOperate(req.user,e,'export')}})));});
 app.get('/api/organizations',auth,(req,res)=>res.json(req.user.role==='owner'?db.prepare('SELECT * FROM organizations').all():db.prepare('SELECT * FROM organizations WHERE id=?').all(req.user.organization_id)));
@@ -103,12 +113,12 @@ app.post('/api/admin/upload',auth,express.raw({type:['image/png','image/jpeg','i
  log(req.user,'image.upload',kind,kind==='cover'?eventRow(eventId).organization_id:req.user.organization_id);res.json({url});
 });
 app.post('/api/organizations',auth,(req,res)=>{if(req.user.role!=='owner')return bad(res,'無權限',403);const name=String(req.body?.name||'').trim();if(!name||name.length>100)return bad(res,'主辦單位名稱不正確');const id=randomUUID();db.prepare('INSERT INTO organizations(id,name,email,phone) VALUES(?,?,?,?)').run(id,name,String(req.body.email||''),String(req.body.phone||''));log(req.user,'organization.create',id);res.json({id});});
-app.post('/api/admin/events',auth,(req,res)=>{const v=req.body||{};if(!validateEvent(v))return bad(res,'活動資料格式不正確');const org=v.organizationId||req.user.organization_id;if(!canManage(req.user,org)||!db.prepare('SELECT id FROM organizations WHERE id=?').get(org))return bad(res,'無權限',403);const id=randomUUID();db.prepare('INSERT INTO events(id,organization_id,title,description,date,location,price,capacity,max_per_registration,status,archived,review_required,custom_fields) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,org,v.title.trim(),v.description||'',v.date||'',v.location||'',v.price,v.capacity,v.maxPerRegistration,v.status,0,v.reviewRequired?1:0,JSON.stringify(v.customFields));db.prepare('UPDATE events SET category=? WHERE id=?').run(validCategory(v.category)?v.category:'體驗',id);db.prepare('UPDATE events SET allow_waitlist=? WHERE id=?').run(v.allowWaitlist?1:0,id);db.prepare('UPDATE events SET auto_waitlist=? WHERE id=?').run(v.autoWaitlist===false?0:1,id);log(req.user,'event.create',id);res.json({id});});
+app.post('/api/admin/events',auth,(req,res)=>{const v=req.body||{};if(!validateEvent(v))return bad(res,'活動資料格式不正確');const org=v.organizationId||req.user.organization_id;if(!canManage(req.user,org)||!db.prepare('SELECT id FROM organizations WHERE id=?').get(org))return bad(res,'無權限',403);const id=randomUUID();let begun=false;try{db.exec('BEGIN IMMEDIATE');begun=true;db.prepare('INSERT INTO events(id,organization_id,title,description,date,location,price,capacity,max_per_registration,status,archived,review_required,custom_fields,category,allow_waitlist,auto_waitlist) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,org,v.title.trim(),v.description||'',v.date||'',v.location||'',v.price,v.capacity,v.maxPerRegistration,v.status,0,v.reviewRequired?1:0,JSON.stringify(v.customFields),validCategory(v.category)?v.category:'體驗',v.allowWaitlist?1:0,v.autoWaitlist===false?0:1);savePlatformEvent(db,id,v);log(req.user,'event.create',id,org);db.exec('COMMIT');begun=false;res.json({id})}catch{if(begun)db.exec('ROLLBACK');bad(res,'活動建立失敗',500)}});
 app.put('/api/admin/events/:id',auth,(req,res)=>{
  const old=eventRow(req.params.id);if(!old)return bad(res,'活動不存在',404);if(!canManage(req.user,old.organization_id))return bad(res,'無權限',403);const v=req.body||{};if(!validateEvent(v))return bad(res,'活動資料格式不正確');
- db.exec('BEGIN IMMEDIATE');try{const occupied=db.prepare("SELECT COALESCE(SUM(participants),0) n FROM registrations WHERE event_id=? AND status IN ('confirmed','pending')").get(old.id).n;if(v.capacity<occupied){db.exec('ROLLBACK');return bad(res,'名額不可小於已占用名額');}
+ let begun=false;try{db.exec('BEGIN IMMEDIATE');begun=true;const occupied=db.prepare("SELECT COALESCE(SUM(participants),0) n FROM registrations WHERE event_id=? AND status IN ('confirmed','pending')").get(old.id).n;if(v.capacity<occupied){db.exec('ROLLBACK');begun=false;return bad(res,'名額不可小於已占用名額');}
  db.prepare('UPDATE events SET title=?,description=?,date=?,location=?,price=?,capacity=?,max_per_registration=?,status=?,archived=?,review_required=?,custom_fields=?,category=?,allow_waitlist=?,auto_waitlist=? WHERE id=?').run(v.title.trim(),v.description||'',v.date||'',v.location||'',v.price,v.capacity,v.maxPerRegistration,v.status,v.archived?1:0,v.reviewRequired?1:0,JSON.stringify(v.customFields),v.category||old.category,v.allowWaitlist?1:0,v.autoWaitlist===undefined?old.auto_waitlist:v.autoWaitlist?1:0,old.id);
- promoteWaitlist(old.id,req.user,req.requestId);log(req.user,'event.update',old.id);db.exec('COMMIT');res.json({ok:true});}catch{db.exec('ROLLBACK');bad(res,'活動更新失敗',500);}
+ savePlatformEvent(db,old.id,v,old);notifyEventChange(db,queueMail,old,eventRow(old.id));promoteWaitlist(old.id,req.user,req.requestId);log(req.user,'event.update',old.id,old.organization_id);db.exec('COMMIT');begun=false;res.json({ok:true});}catch{if(begun)db.exec('ROLLBACK');bad(res,'活動更新失敗',500);}
 });
 app.post('/api/registrations/lookup',throttle,(req,res)=>{const id=String(req.body?.id||''),code=String(req.body?.code||'');const r=db.prepare('SELECT id,event_id,status,participants,created_at FROM registrations WHERE id=? AND lookup_code=? AND lookup_code<>?').get(id,code,'');if(!r)return bad(res,'查無資料或查詢碼錯誤',404);const e=eventRow(r.event_id);res.setHeader('Cache-Control','no-store');res.json({id:r.id,eventId:r.event_id,title:e.title,date:e.date,location:e.location,status:r.status,participants:r.participants,createdAt:r.created_at,ticket:r.status==='confirmed'&&!e.archived&&!['draft','cancelled'].includes(e.status)?ticketFor(r):null});});
 app.get('/api/admin/events/:id/registrations',auth,(req,res)=>{const e=eventRow(req.params.id);if(!e)return bad(res,'活動不存在',404);if(!canView(req.user,e.organization_id,e.id))return bad(res,'無權限',403);res.json(db.prepare('SELECT * FROM registrations WHERE event_id=? ORDER BY created_at DESC').all(e.id).map(r=>{const value=regJSON(r);delete value.lookup_code;return value}));});
@@ -220,4 +230,4 @@ app.use(express.static(path.join(root,'public'),{dotfiles:'deny'}));
 app.get('/',(req,res)=>res.sendFile(path.join(root,'public','index.html')));
 const PORT=Number(process.env.PORT??3000);
 const HOST=process.env.HOST||'0.0.0.0';
-const httpServer=app.listen(PORT,HOST,()=>console.log(`EventFlow V3.0 running on ${HOST}:${httpServer.address().port} | Local: http://localhost:${httpServer.address().port}`));
+const httpServer=http.createServer(app);chat.attach(httpServer);httpServer.listen(PORT,HOST,()=>console.log(`EventFlow V3.0 running on ${HOST}:${httpServer.address().port} | Local: http://localhost:${httpServer.address().port}`));

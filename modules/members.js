@@ -1,3 +1,4 @@
+import {revokePasswordLinks} from './identity-security.js';
 import {randomUUID} from 'node:crypto';
 import {record,email,password,identifier} from './validation.js';
 export function registerMembers(app,{db,auth,policy,log,hashPass,bad}){
@@ -24,7 +25,7 @@ export function registerMembers(app,{db,auth,policy,log,hashPass,bad}){
   let begun=false;try{
    db.exec('BEGIN IMMEDIATE');begun=true;const now=new Date().toISOString();
    if(create)db.prepare('INSERT INTO users(id,email,passhash,role,organization_id,disabled,staff_mode) VALUES(?,?,?,?,?,0,?)').run(id,v.email.trim().toLowerCase(),hashPass(v.password),v.role,v.organizationId,mode);
-   else if(v.password!==undefined)db.prepare('UPDATE users SET passhash=? WHERE id=?').run(hashPass(v.password),id);
+   else if(v.password!==undefined){db.prepare('UPDATE users SET passhash=? WHERE id=?').run(hashPass(v.password),id);revokePasswordLinks(db,id);}
    if(v.globalDisabled!==undefined)db.prepare('UPDATE users SET disabled=? WHERE id=?').run(v.globalDisabled?1:0,id);
    // The legacy home organization is immutable here: this endpoint only changes an existing membership.
    db.prepare("INSERT INTO organization_memberships(user_id,organization_id,role,status,staff_mode,created_at,updated_at) VALUES(?,?,?,'active',?,?,?) ON CONFLICT(user_id,organization_id) DO UPDATE SET role=excluded.role,status='active',staff_mode=excluded.staff_mode,updated_at=excluded.updated_at").run(id,v.organizationId,v.role,mode,now,now);

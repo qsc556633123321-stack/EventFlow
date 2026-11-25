@@ -1,3 +1,4 @@
+import {settingsValid} from './form-schema.js';
 export const record=v=>v!==null&&typeof v==='object'&&!Array.isArray(v)&&Object.getPrototypeOf(v)===Object.prototype;
 export const text=(v,max,required=false)=>typeof v==='string'&&v.length<=max&&(!required||!!v.trim())&&!/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(v);
 // Accept a single unquoted mailbox, not display names, comments or recipient lists.
@@ -5,23 +6,17 @@ export const email=v=>text(v,254,true)&&/^[A-Za-z0-9!#$%&'*+\/=?^_`{|}~-]+(?:\.[
 export const identifier=v=>typeof v==='string'&&/^[a-zA-Z0-9_-]{1,100}$/.test(v);
 export const date=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&!isNaN(Date.parse(v))&&new Date(v).toISOString().slice(0,10)===v;
 export const password=v=>text(v,256,true)&&v.length>=12;
-export function fieldsValid(fields){
- if(!Array.isArray(fields)||fields.length>30)return false;
- const ids=new Set();
- return fields.every(f=>{
-  if(!record(f)||!identifier(f.id)||['__proto__','constructor','prototype'].includes(f.id)||ids.has(f.id)||!text(f.label,100,true)||!['text','textarea','number','date','select'].includes(f.type))return false;
-  ids.add(f.id);
-  if(f.required!==undefined&&typeof f.required!=='boolean'||f.visible!==undefined&&typeof f.visible!=='boolean')return false;
-  return f.type!=='select'||Array.isArray(f.options)&&f.options.length>0&&f.options.length<=50&&f.options.every(o=>text(o,100,true));
- });
-}
+import {fieldsValid} from './form-schema.js';
+export {fieldsValid};
 export function validateEvent(v){
- return record(v)&&text(v.title,100,true)&&Number.isSafeInteger(v.capacity)&&v.capacity>0&&v.capacity<=1000000&&Number.isSafeInteger(v.maxPerRegistration)&&v.maxPerRegistration>0&&v.maxPerRegistration<=100&&Number.isSafeInteger(v.price)&&v.price>=0&&v.price<=100000000&&['open','closed','draft','cancelled'].includes(v.status)&&fieldsValid(v.customFields)&&['reviewRequired','allowWaitlist','autoWaitlist','archived'].every(k=>v[k]===undefined||typeof v[k]==='boolean')&&(v.description===undefined||text(v.description,20000))&&(v.date===undefined||v.date===''||date(v.date))&&(v.location===undefined||text(v.location,300))&&(v.organizationId===undefined||identifier(v.organizationId))&&(v.category===undefined||['旅遊','講座','營隊','體驗'].includes(v.category));
+ const jsonSettings=value=>record(value)&&JSON.stringify(value).length<=50000;
+ const instant=value=>value===''||typeof value==='string'&&value.length<=40&&/^\d{4}-\d{2}-\d{2}T/.test(value)&&Number.isFinite(Date.parse(value));
+ return record(v)&&text(v.title,100,true)&&Number.isSafeInteger(v.capacity)&&v.capacity>0&&v.capacity<=1000000&&Number.isSafeInteger(v.maxPerRegistration)&&v.maxPerRegistration>0&&v.maxPerRegistration<=100&&Number.isSafeInteger(v.price)&&v.price>=0&&v.price<=100000000&&['open','closed','draft','cancelled'].includes(v.status)&&fieldsValid(v.customFields)&&['reviewRequired','allowWaitlist','autoWaitlist','archived','memberRequired','chatEnabled'].every(k=>v[k]===undefined||typeof v[k]==='boolean')&&(v.chatJoinPolicy===undefined||['members','confirmed','staff'].includes(v.chatJoinPolicy))&&(v.formSettings===undefined||jsonSettings(v.formSettings)&&settingsValid(v.formSettings))&&(v.notificationSettings===undefined||jsonSettings(v.notificationSettings))&&(v.startsAt===undefined||instant(v.startsAt))&&(v.endsAt===undefined||instant(v.endsAt))&&(!v.startsAt||!v.endsAt||Date.parse(v.endsAt)>=Date.parse(v.startsAt))&&(v.description===undefined||text(v.description,20000))&&(v.date===undefined||v.date===''||date(v.date))&&(v.location===undefined||text(v.location,300))&&(v.organizationId===undefined||identifier(v.organizationId))&&(v.category===undefined||['旅遊','講座','營隊','體驗'].includes(v.category));
 }
 export function routeValidation(req,res,next){
  const v=req.body,p=req.path;
  const bad=()=>res.status(400).json({error:'輸入資料格式不正確',code:'VALIDATION_ERROR'});
- if(['POST','PUT','PATCH','DELETE'].includes(req.method)&&p.startsWith('/api/')&&!p.startsWith('/api/admin/upload')&&v!==undefined&&!record(v))return bad();
+ if(['POST','PUT','PATCH','DELETE'].includes(req.method)&&p.startsWith('/api/')&&!p.startsWith('/api/admin/upload')&&p!=='/api/member/avatar'&&v!==undefined&&!record(v))return bad();
  if(!v)return next();
  if(p==='/api/admin/context'&&v.organizationId!==undefined&&v.organizationId!==null&&v.organizationId!==''&&!identifier(v.organizationId))return bad();
  if(p==='/api/admin/import-v13'&&req.method==='POST'){
@@ -36,9 +31,9 @@ export function routeValidation(req,res,next){
  if(p==='/api/admin/branding'&&req.method==='PUT'&&(!text(v.name,100,true)||!text(v.tagline,160)||typeof v.brandColor!=='string'))return bad();
  if(/\/review$/.test(p)&&(!text(v.status,20,true)||(v.note!==undefined&&!text(v.note,500))))return bad();
  if(/\/reviews\/batch$/.test(p)&&(!Array.isArray(v.ids)||!v.ids.length||v.ids.length>100||!v.ids.every(identifier)))return bad();
- if(/\/register$/.test(p)){
+ if(/^\/api\/events\/[^/]+\/register$/.test(p)){
   if(!text(v.name,60,true)||!text(v.phone,40,true)||!email(v.email)||!Number.isSafeInteger(v.participants)||(v.notes!==undefined&&!text(v.notes,1000))||(v.customAnswers!==undefined&&!record(v.customAnswers)))return bad();
-  if(v.customAnswers&&Object.entries(v.customAnswers).some(([k,x])=>!identifier(k)||['__proto__','constructor','prototype'].includes(k)||!['string','number'].includes(typeof x)||String(x).length>500))return bad();
+  if(v.customAnswers&&Object.entries(v.customAnswers).some(([k,x])=>!identifier(k)||['__proto__','constructor','prototype'].includes(k)||!(typeof x==='boolean'||typeof x==='string'&&text(x,500)||typeof x==='number'&&Number.isFinite(x)||Array.isArray(x)&&x.length<=50&&x.every(v=>text(v,100)))))return bad();
  }
  next();
 }
